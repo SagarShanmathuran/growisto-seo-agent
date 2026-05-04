@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.so
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Secrets — NEVER commit these
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+.streamlit/credentials.toml
+
+# Local persistent data (regenerated per environment)
+agent/data/*.json
+!agent/data/.gitkeep
+
+# Generated reports
+*.docx
+seo_report_*.json
+seo_report_*.docx
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# OS
+Thumbs.db

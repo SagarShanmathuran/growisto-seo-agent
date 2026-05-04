@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(py --version)",
+      "Bash(pip install *)",
+      "Bash(mkdir -p legacy agent agent/modules agent/data)",
+      "Bash(mv src *)",
+      "Bash(PYTHONIOENCODING=utf-8 python -X utf8 -m agent.modules.business_model_detector vinodcookware.com adbrew.io aviva.in skydo.com mayorgacoffee.com)",
+      "Bash(PYTHONIOENCODING=utf-8 python -X utf8 -m agent.modules.ahrefs_csv_loader \"Vinod\" \"../vinodcookware.com-organic-keywords-subdomai_2026-04-12_22-26-06.csv\" \"../vinodcookware.com-top-pages-subdomains-in-_2026-04-12_22-25-32.csv\")",
+      "Bash(PYTHONIOENCODING=utf-8 python -X utf8 -m agent.modules.gap_analyzer)",
+      "Bash(cp -r legacy/services agent/services)",
+      "Bash(cp -r legacy/src agent/seo_core)",
+      "Bash(rm -rf agent/services/__pycache__ agent/seo_core/__pycache__)",
+      "Bash(PYTHONIOENCODING=utf-8 python -X utf8 -m agent.modules.report_data_builder)",
+      "Bash(PYTHONIOENCODING=utf-8 python -X utf8 -m agent.services.gemini_client)",
+      "Bash(python -X utf8 -c ' *)",
+      "Bash(python -X utf8 analyze.py --client-url vinodcookware.com --client-name 'Vinod Cookware' --client-keywords ../vinodcookware.com-organic-keywords-subdomai_2026-04-12_22-26-06.csv --client-pages ../vinodcookware.com-top-pages-subdomains-in-_2026-04-12_22-25-32.csv --competitor Milton:../www.milton.in-organic-keywords-subdomains-i_2026-04-12_22-27-43.csv:../www.milton.in-top-pages-subdomains-in--act_2026-04-12_22-27-36.csv --competitor Borosil:../myborosil.com-organic-keywords-subdomains-i_2026-04-12_22-28-25.csv:../myborosil.com-top-pages-subdomains-in--act_2026-04-12_22-28-11.csv --competitor 'TTK Prestige:../shop.ttkprestige.com-organic-keywords-subdo_2026-04-12_22-29-35.csv:../shop.ttkprestige.com-top-pages-subdomains-i_2026-04-12_22-29-18.csv' --niche Cookware --location India --aov 1800 -o vinod_report.docx)",
+      "Bash(PYTHONIOENCODING=utf-8 python -X utf8 -m agent.modules.competitor_finder vinodcookware.com)",
+      "Bash(PYTHONIOENCODING=utf-8 python -X utf8 -m agent.modules.aov_extractor vinodcookware.com)",
+      "Bash(PYTHONIOENCODING=utf-8 python -X utf8 -m agent.modules.triage_filter vinodcookware.com adbrew.io)",
+      "Bash(PYTHONIOENCODING=utf-8 python -X utf8 -m agent.modules.triage_filter vinodcookware.com adbrew.io skydo.com)",
+      "Bash(streamlit run *)",
+      "Bash(python -m streamlit run streamlit_app.py)",
+      "Bash(PYTHONIOENCODING=utf-8 python -X utf8 -m agent.modules.seed_extractor \"https://www.orra.co.in/\" \"vinodcookware.com\" \"myborosil.com\")"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "crawler": {
+    "timeout": 30,
+    "max_pages": 100,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+  },
+  "analysis": {
+    "min_meta_description_length": 120,
+    "max_meta_description_length": 160,
+    "min_h1_count": 1,
+    "max_h1_count": 1
+  },
+  "output": {
+    "format": "json",
+    "include_details": true
+  }
+}
