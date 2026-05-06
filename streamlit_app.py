@@ -379,13 +379,25 @@ with tab1:
                         if not overlap and not new_brands:
                             st.markdown("_No suggestions returned._")
             elif llm_status == "skipped":
-                st.warning(
-                    f"⚠ **Gemini's positioning check did not run.** {skipped_reason or 'Reason unknown.'}  \n"
-                    f"Without it, picks below are based on **Ahrefs keyword overlap + traffic ratio only**, "
-                    f"which can mis-fit when same-category-different-positioning brands rank for similar terms "
-                    f"(e.g. fine-diamond brands flagged as peers for artisan-jewelry brands). "
-                    f"**Manually verify each pick is in the same competitive segment.**"
-                )
+                # Try to figure out *why* it skipped so we can give actionable advice
+                from agent.services.config import get_secret as _gs
+                _gem_key = _gs("GEMINI_API_KEY")
+                if not _gem_key:
+                    st.error(
+                        "❌ **Gemini's positioning check did not run — `GEMINI_API_KEY` is not configured.**  \n\n"
+                        "**Fix:** open https://share.streamlit.io → your app → ⋮ → Settings → Secrets, "
+                        "and add a line like:  \n"
+                        "`GEMINI_API_KEY = \"AIza...\"`  \n\n"
+                        "Get a key at https://aistudio.google.com/apikey (free tier — no billing needed)."
+                    )
+                else:
+                    st.warning(
+                        f"⚠ **Gemini's positioning check did not run.** {skipped_reason or 'Reason unknown.'}  \n\n"
+                        f"Possible causes: rate-limit (429), Gemini overload (503), invalid key (401), "
+                        f"or the project has zero free-tier quota allocated.  \n"
+                        f"Without it, picks are based on **Ahrefs keyword overlap + traffic ratio only**, "
+                        f"which can mis-fit positioning. **Manually verify each pick.**"
+                    )
         elif source == "serpapi" and comp_result.get("seed_keywords"):
             st.info(f"SerpAPI · seeds: {', '.join(comp_result['seed_keywords'][:6])}")
 
