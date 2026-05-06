@@ -104,19 +104,34 @@ def generate_short_report(
         })
     _add_table(doc, pd.DataFrame(rows))
 
-    # One-line headline
+    # One-line headline + REALISTIC achievable target (matches Big Wins below)
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(8)
     avg_comp = sum(comp_traffic.values()) / len(comp_traffic) if comp_traffic else 0
+    achievable = getattr(gap, "achievable_top10_traffic", 0)
     if avg_comp > 0 and client_total_traffic > 0:
         ratio = avg_comp / client_total_traffic
         run = p.add_run(
-            f"📊 Competitors average {ratio:.1f}× the client's traffic. "
-            f"Closing this gap would mean +{int(avg_comp - client_total_traffic):,} clicks/month."
+            f"📊 Competitors average {ratio:.1f}× the client's TOTAL traffic. "
+            f"But only a fraction of that is reachable from pages relevant to the client's catalog."
         )
         run.font.size = Pt(11)
         run.italic = True
         run.font.color.rgb = _BRAND_DARK_RGB
+
+    # The realistic target — what closing the top-10 relevant gaps gets you
+    if achievable > 0:
+        p2 = doc.add_paragraph()
+        p2.paragraph_format.space_before = Pt(4)
+        run2 = p2.add_run(
+            f"🎯 Realistic short-term target: capture ~{achievable:,} clicks/month by ranking "
+            f"on the top 10 RELEVANT gap keywords (see page-level opportunities below). "
+            f"This is what you can defensibly project in a 6–12 month engagement."
+        )
+        run2.font.size = Pt(11)
+        run2.bold = True
+        from docx.shared import RGBColor as _RGB
+        run2.font.color.rgb = _RGB(0x05, 0x96, 0x69)   # green
 
     # ── 3. Top Page-Level Traffic Opportunities (Big Wins) ────────────────────
     if gap.big_wins:

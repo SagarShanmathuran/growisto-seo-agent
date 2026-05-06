@@ -46,6 +46,7 @@ class GapAnalysis:
     gap_keywords:   list[GapKeyword] = field(default_factory=list)
     gap_total_volume: int           = 0
     big_wins:       list[BigWin]    = field(default_factory=list)   # top-3 concrete opportunities
+    achievable_top10_traffic: int   = 0     # sum of competitor traffic from top 10 RELEVANT gap kws — the realistic short-term target
     saturated_keywords: list[dict]  = field(default_factory=list)  # client already top-10, growth-limited
     page_count_delta: int           = 0     # avg_competitor_pages - client_pages
     notes:          list[str]       = field(default_factory=list)
@@ -114,53 +115,88 @@ _TOPIC_STOPWORDS = frozenset({
 })
 
 
-def _client_topic_tokens(client_keywords: __import__("pandas").DataFrame, top_n: int = 200) -> set[str]:
+# Tokens that appear so often in client vocabularies that single-token match is meaningless
+# (e.g. "cat" appears in millions of unrelated kws — "norwegian forest cat" shouldn't pass
+# just because the client sells cat litter). Single occurrences of these don't count as
+# evidence of relevance — but multi-token matches involving them do.
+_GENERIC_VERTICAL_TOKENS = frozenset({
+    "cat", "cats", "dog", "dogs", "pet", "pets", "puppy", "puppies", "kitten", "kittens",
+    "baby", "babies", "kid", "kids", "child", "children", "men", "women", "girl", "girls",
+    "boy", "boys", "home", "house", "office", "kitchen", "bathroom", "bedroom",
+    "online", "shop", "store", "buy", "best", "top", "new", "free", "cheap",
+    "indian", "india", "usa", "uk",
+})
+
+
+def _client_topic_tokens(client_keywords: __import__("pandas").DataFrame, top_n: int = 200) -> tuple[set[str], set[str]]:
     """
     Build the client's "category vocabulary" from their top-traffic non-brand keywords.
-    Only tokens with ≥2 occurrences are kept — that filters incidental words
-    while keeping every category term that actually defines the catalog.
+    Returns (specific_tokens, generic_tokens) — specific = product/category words that
+    define the client's catalog uniquely; generic = vertical words that are too broad
+    to use as a single-token relevance signal.
 
-    e.g. for Vinod Cookware: {'kadai', 'pressure', 'cooker', 'tawa', 'kitchen', ...}
-         for Catalyst Pet (dogs/cats): {'dog', 'cat', 'food', 'treats', 'pet', ...}
+    e.g. for Catalyst Pet (cat litter brand):
+         specific = {litter, natural, pellet, fragrance, ...}
+         generic  = {cat, pet, ...}
     """
     import re as _re
     if client_keywords is None or len(client_keywords) == 0:
-        return set()
+        return set(), set()
 
-    # Take top 200 by traffic (or volume if no traffic column)
     sort_col = "Current organic traffic" if "Current organic traffic" in client_keywords.columns else "Volume"
     top = client_keywords.sort_values(sort_col, ascending=False).head(top_n)
 
     token_counts: dict[str, int] = {}
     for kw in top["Keyword"].astype(str):
-        # Lowercase + split into word tokens
         toks = _re.findall(r"[a-zA-Zऀ-ॿ஀-௿]+", kw.lower())
         for t in toks:
             if len(t) < 3 or t in _TOPIC_STOPWORDS:
                 continue
             token_counts[t] = token_counts.get(t, 0) + 1
 
-    # Keep tokens that appear in ≥2 keywords — incidental words drop out
-    return {tok for tok, cnt in token_counts.items() if cnt >= 2}
+    # Keep tokens appearing ≥2 times. Split into generic-vertical vs specific.
+    all_tokens = {tok for tok, cnt in token_counts.items() if cnt >= 2}
+    generic = all_tokens & _GENERIC_VERTICAL_TOKENS
+    specific = all_tokens - _GENERIC_VERTICAL_TOKENS
+    return specific, generic
 
 
-def _is_relevant_to_client(keyword: str, client_tokens: set[str]) -> bool:
-    """A competitor's keyword is 'relevant' if at least one of its meaningful
-    tokens overlaps with the client's category vocabulary."""
-    if not client_tokens:
+def _is_relevant_to_client(keyword: str, specific: set[str], generic: set[str]) -> bool:
+    """
+    Stricter relevance: a competitor keyword passes if it shares EITHER:
+      - 1+ SPECIFIC token (e.g. 'litter', 'kadai') — strong signal
+      - 2+ tokens in total when only generic-vertical matches exist
+        (so "norwegian forest cat" with only 1 generic token "cat" → rejected;
+         "cat litter" with 1 generic + 1 specific → accepted via specific)
+
+    This is what stops "norwegian forest cat" / "orange cat" / "burmese cat" from
+    passing for a cat-litter brand whose vocabulary contains "cat" + "litter".
+    """
+    if not specific and not generic:
         return True   # no signal — include everything
+
     import re as _re
     toks = _re.findall(r"[a-zA-Zऀ-ॿ஀-௿]+", str(keyword).lower())
-    meaningful = [t for t in toks if len(t) >= 3 and t not in _TOPIC_STOPWORDS]
-    return any(t in client_tokens for t in meaningful)
+    meaningful = {t for t in toks if len(t) >= 3 and t not in _TOPIC_STOPWORDS}
+
+    if meaningful & specific:
+        return True   # any specific match → relevant
+
+    # Only generic matches — require 2+ overlapping generics, AND at least one of
+    # those generic matches must form a 2-word phrase with another non-stopword
+    # in the keyword. Practically: one-word matches with just 'cat' fail.
+    generic_overlap = meaningful & generic
+    if len(generic_overlap) >= 2:
+        return True
+
+    return False
 
 
-def _filter_relevance(df, client_tokens: set[str]):
-    """Drop competitor keywords with no overlap with client's category vocab.
-    Skipped when client_tokens is empty (no signal to filter on)."""
-    if not client_tokens:
+def _filter_relevance(df, specific: set[str], generic: set[str]):
+    """Drop competitor keywords that don't pass the relevance test."""
+    if not specific and not generic:
         return df
-    mask = df["Keyword"].astype(str).apply(lambda k: _is_relevant_to_client(k, client_tokens))
+    mask = df["Keyword"].astype(str).apply(lambda k: _is_relevant_to_client(k, specific, generic))
     return df[mask].copy()
 
 
@@ -209,13 +245,15 @@ def analyze(
 
     # ── Catalog-relevance filter ───────────────────────────────────────────
     # Build the client's category vocabulary from their actual ranked keywords,
-    # then drop competitor keywords that share no topic tokens. This is what
-    # stops 'timothy hay' (rabbit food) from polluting a dog/cat client's gap
-    # analysis: the client never ranks for 'timothy' or 'hay', so the keyword
-    # has zero overlap with their catalog vocabulary and gets filtered out.
-    client_tokens = _client_topic_tokens(client_nb)
-    if client_tokens:
-        comp_filtered = [(c, _filter_relevance(cnb, client_tokens)) for c, cnb in comp_filtered]
+    # split into specific (product terms — strong signal) and generic-vertical
+    # (cat/pet/dog — single-token match is meaningless for these). A competitor
+    # keyword passes if it shares 1+ specific token, OR 2+ generic-vertical tokens.
+    # This stops 'norwegian forest cat' / 'orange cat' (informational breed kws)
+    # from passing for a cat-LITTER brand whose vocab is {cat, litter, ...}.
+    specific_tokens, generic_tokens = _client_topic_tokens(client_nb)
+    client_tokens = specific_tokens | generic_tokens   # back-compat, used in some checks below
+    if specific_tokens or generic_tokens:
+        comp_filtered = [(c, _filter_relevance(cnb, specific_tokens, generic_tokens)) for c, cnb in comp_filtered]
 
     # Use FILTERED traffic (intent + relevance) for the headline ratio.
     # This is what makes the "X× larger" number actually achievable — we only
@@ -312,6 +350,16 @@ def analyze(
     gap_list = sorted(gap_rows.values(), key=lambda x: -x.volume)[:max_gap_keywords]
     gap_total_vol = sum(g.volume for g in gap_list)
 
+    # ── Achievable target: sum of competitor traffic from the top-10 BIG-WIN
+    # opportunities (already filtered by relevance). This is what the analyst
+    # would realistically aim to capture in 6-12 months — NOT the inflated
+    # "competitor's total traffic minus client's total traffic" headline.
+    if gap_rows:
+        top_10_by_score = sorted(gap_rows.values(), key=_score_big_win, reverse=True)[:10]
+        achievable_top10_traffic = sum(g.competitor_traffic for g in top_10_by_score)
+    else:
+        achievable_top10_traffic = 0
+
     # Saturated: client already top 10 (limited growth upside) — uses filtered client_nb for B2B
     sat = client_nb[client_nb["Current position"] <= 10].sort_values(
         "Volume", ascending=False
@@ -353,17 +401,16 @@ def analyze(
             )
 
     # Catalog-relevance note — what got filtered as out-of-category
-    if client_tokens:
-        # Compute the "irrelevant traffic" — competitor clicks on keywords outside client's catalog
+    if specific_tokens or generic_tokens:
         unfiltered_avg = sum(c.nb_traffic for c in competitors) / len(competitors)
         if avg_comp_signal_traffic > 0 and unfiltered_avg > avg_comp_signal_traffic:
             irrelevant_pct = (1 - avg_comp_signal_traffic / unfiltered_avg) * 100
-            top_topics = ", ".join(sorted(client_tokens)[:8])
+            top_specific = ", ".join(sorted(specific_tokens)[:8]) or "(none — all generic vertical terms)"
+            top_generic = ", ".join(sorted(generic_tokens)[:5])
             notes.append(
-                f"🎯 Relevance filter: only counted competitor traffic on keywords matching the client's "
-                f"catalog vocabulary ({top_topics}…). Excluded {irrelevant_pct:.0f}% of competitor traffic "
-                f"as out-of-category — that's traffic the client cannot realistically capture without "
-                f"launching new product lines."
+                f"🎯 Relevance filter — specific catalog tokens: {top_specific}. "
+                f"Generic vertical tokens: {top_generic}. Required 1+ specific match OR 2+ generic. "
+                f"Excluded {irrelevant_pct:.0f}% of competitor traffic as out-of-category."
             )
 
     if traffic_ratio < 0.25:
@@ -403,6 +450,7 @@ def analyze(
         gap_keywords=gap_list,
         gap_total_volume=gap_total_vol,
         big_wins=big_wins,
+        achievable_top10_traffic=achievable_top10_traffic,
         saturated_keywords=saturated,
         page_count_delta=page_delta,
         notes=notes,

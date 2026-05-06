@@ -104,12 +104,11 @@ def build_keyword_ranking_comparison_df(
     doesn't show up for a dog/cat client).
     """
     # Catalog-relevance filter: only show keywords that match the client's
-    # category vocabulary
+    # category vocabulary (specific + generic tokens)
     from agent.modules.gap_analyzer import _client_topic_tokens, _is_relevant_to_client
-    client_tokens = _client_topic_tokens(client.nb_keywords)
+    specific_tokens, generic_tokens = _client_topic_tokens(client.nb_keywords)
 
     # Collect candidate keywords by max volume seen across all sites.
-    # Skip junk: keywords with no letters (e.g. just digits) or length < 3.
     import re as _re
     candidates: dict[str, int] = {}
     for site in [client, *competitors]:
@@ -117,10 +116,9 @@ def build_keyword_ranking_comparison_df(
         for _, r in nb.iterrows():
             kw = str(r["Keyword"]).strip()
             if len(kw) < 3 or not _re.search(r"[A-Za-zऀ-ॿ஀-௿]", kw):
-                continue   # require at least one letter (ASCII or Indic)
-            # Drop kws unrelated to the client's catalog (e.g. timothy hay
-            # for a dog/cat brand). Skip filter if no client signal.
-            if client_tokens and not _is_relevant_to_client(kw, client_tokens):
+                continue
+            if (specific_tokens or generic_tokens) and \
+               not _is_relevant_to_client(kw, specific_tokens, generic_tokens):
                 continue
             v = int(r["Volume"])
             if v > candidates.get(kw, 0):
@@ -169,7 +167,7 @@ def build_page_traffic_comparison_df(
     # Catalog-relevance filter — drop pages whose top keyword is unrelated to
     # the client's catalog (e.g. 'timothy hay' for a dog/cat brand).
     from agent.modules.gap_analyzer import _client_topic_tokens, _is_relevant_to_client
-    client_tokens = _client_topic_tokens(client.nb_keywords)
+    specific_tokens, generic_tokens = _client_topic_tokens(client.nb_keywords)
 
     # Use the union of top pages across competitors as candidates
     all_top: list[tuple[str, str, int]] = []  # (top_keyword, url, traffic)
@@ -178,7 +176,8 @@ def build_page_traffic_comparison_df(
         for _, r in pg.iterrows():
             kw = str(r.get("Top keyword", "") or "").strip()
             if not kw: continue
-            if client_tokens and not _is_relevant_to_client(kw, client_tokens):
+            if (specific_tokens or generic_tokens) and \
+               not _is_relevant_to_client(kw, specific_tokens, generic_tokens):
                 continue   # out-of-category page — skip
             all_top.append((kw, str(r.get("URL", "")), int(r["Traffic"])))
 
