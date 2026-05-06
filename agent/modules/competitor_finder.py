@@ -259,14 +259,19 @@ def find_competitors(
             except Exception:
                 pass
 
+            llm_status = peer_result.get("llm_source", "skipped")
+            llm_reason = peer_result.get("llm_skip_reason", "") or llm_skip_reason
+            llm_all_suggestions = peer_result.get("all_suggestions", [])
             return {
                 "seed_keywords":       [],
                 "client_row":          client_row,
                 "competitors":         comps[:top_n + len(peer_result.get("validated_peers", []))],
                 "source":              "ahrefs+llm" if peer_units > 0 else "ahrefs",
                 "category_understood": peer_result.get("category_understood", ""),
+                "llm_status":          llm_status,            # "gemini" | "skipped"
+                "llm_skip_reason":     llm_reason,
+                "llm_all_suggestions": llm_all_suggestions,   # raw list with rationales
                 "llm_peers_added":     len(peer_result.get("validated_peers", [])),
-                "llm_skipped_reason":  llm_skip_reason,
                 "units_cost":          result["units_cost"] + (client_metrics.get("units_cost", 0) if client_row else 0) + peer_units,
                 "errors":              [] if client_row else [client_metrics.get("error", "")] if "error" in client_metrics else [],
             }

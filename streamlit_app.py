@@ -344,16 +344,48 @@ with tab1:
             cost = comp_result.get("units_cost", 0)
             llm_added = comp_result.get("llm_peers_added", 0)
             cat = comp_result.get("category_understood", "")
-            skipped_reason = comp_result.get("llm_skipped_reason", "")
+            llm_status = comp_result.get("llm_status", "skipped")
+            skipped_reason = comp_result.get("llm_skip_reason", "")
+            llm_suggestions = comp_result.get("llm_all_suggestions", [])
+
             extras = []
             if llm_added:
-                extras.append(f"+ {llm_added} brand peers via LLM")
+                extras.append(f"+ {llm_added} new brand peers via LLM")
             extra_str = "  ·  " + "  ·  ".join(extras) if extras else ""
             st.success(f"✅ {len(comp_result['competitors'])} candidates  ·  Cost: {cost} units{extra_str}")
-            if cat:
-                st.caption(f"🧠 Category understood: _{cat}_")
-            elif skipped_reason:
-                st.caption(f"💰 _{skipped_reason}_")
+
+            # ── LLM positioning verification (the "how do I trust this?" answer) ──
+            if llm_status == "gemini" and cat:
+                st.info(f"🧠 **Gemini understood the category as:** _{cat}_")
+
+                # Show the LLM's actual peer suggestions so analyst can compare
+                if llm_suggestions:
+                    ahrefs_doms = {c["domain"].lower() for c in comp_result["competitors"]}
+                    overlap = [s for s in llm_suggestions if s.get("domain","").lower() in ahrefs_doms]
+                    new_brands = [s for s in llm_suggestions if s.get("domain","").lower() not in ahrefs_doms]
+
+                    with st.expander(f"🔍 Gemini's {len(llm_suggestions)} peer brand suggestions  ·  "
+                                      f"{len(overlap)} match Ahrefs picks  ·  {len(new_brands)} new", expanded=True):
+                        if overlap:
+                            st.markdown("**✓ Gemini agrees with these Ahrefs picks** (high confidence):")
+                            for s in overlap:
+                                st.markdown(f"- **{s.get('domain')}** — _{s.get('rationale','')}_")
+                        if new_brands:
+                            st.markdown("**➕ Gemini suggested these (not in Ahrefs results)**:")
+                            for s in new_brands:
+                                in_added = s.get("domain","").lower() in {c["domain"].lower() for c in comp_result["competitors"] if c.get("source") == "llm"}
+                                badge = " ✓ added & validated" if in_added else " (not validated — Ahrefs has no metrics for this domain in target country)"
+                                st.markdown(f"- **{s.get('domain')}**{badge} — _{s.get('rationale','')}_")
+                        if not overlap and not new_brands:
+                            st.markdown("_No suggestions returned._")
+            elif llm_status == "skipped":
+                st.warning(
+                    f"⚠ **Gemini's positioning check did not run.** {skipped_reason or 'Reason unknown.'}  \n"
+                    f"Without it, picks below are based on **Ahrefs keyword overlap + traffic ratio only**, "
+                    f"which can mis-fit when same-category-different-positioning brands rank for similar terms "
+                    f"(e.g. fine-diamond brands flagged as peers for artisan-jewelry brands). "
+                    f"**Manually verify each pick is in the same competitive segment.**"
+                )
         elif source == "serpapi" and comp_result.get("seed_keywords"):
             st.info(f"SerpAPI · seeds: {', '.join(comp_result['seed_keywords'][:6])}")
 
@@ -488,6 +520,13 @@ with tab1:
                 if rr.get("warning"):
                     st.warning(rr["warning"])
 
+                # Build LLM agreement set — picks that Gemini also suggested
+                llm_agree_doms = {
+                    s.get("domain", "").lower()
+                    for s in comp_result.get("llm_all_suggestions", [])
+                }
+                llm_ran = comp_result.get("llm_status") == "gemini"
+
                 # Big cards for the top 3
                 comp_lookup = {c["domain"]: c for c in active_comps}
                 conf_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}
@@ -498,9 +537,22 @@ with tab1:
                     conf = pick.get("confidence", "medium")
                     already_selected = d in selected_domains
 
+                    # Positioning-fit badge: did Gemini also suggest this domain?
+                    if llm_ran:
+                        if d.lower() in llm_agree_doms:
+                            fit_badge = "✓ Gemini agrees"
+                            fit_color = "green"
+                        else:
+                            fit_badge = "⚠ Not in Gemini's peer list"
+                            fit_color = "orange"
+                    else:
+                        fit_badge = "❓ Gemini didn't run"
+                        fit_color = "grey"
+
                     with st.container(border=True):
                         cols = st.columns([2.5, 1.0, 1.5, 0.8, 1.2, 1.0])
                         cols[0].markdown(f"### {conf_emoji.get(conf, '🟡')} **{d}**")
+                        cols[0].markdown(f"<span style='color:{fit_color};font-size:0.85em;font-weight:600'>{fit_badge}</span>", unsafe_allow_html=True)
                         cols[1].markdown(f"{TYPE_BADGE.get(c.get('type', 'unknown'), '?')}")
                         cols[2].markdown(f"**{c.get('traffic', 0):,}** traffic")
                         cols[3].markdown(f"DR **{c.get('domain_rating', 0):.0f}**")

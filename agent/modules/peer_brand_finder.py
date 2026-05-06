@@ -92,26 +92,48 @@ def suggest_peer_brands(
               .replace("{location}",        location)
               .replace("{path_hint}",       path_hint or "(none — root domain)"))
 
-    try:
-        url = _ENDPOINT.format(model=_MODEL, key=api_key)
-        r = requests.post(url, json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json"},
-        }, timeout=45)
-        if r.status_code != 200:
-            if verbose: print(f"  [peer-brand] HTTP {r.status_code} — skipping")
-            return {"category_understood": "", "suggested_peers": [], "source": "skipped"}
-        text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE)
-        parsed = json.loads(text)
-        parsed.setdefault("category_understood", "")
-        parsed.setdefault("suggested_peers",     [])
-        parsed["source"] = "gemini"
-        if verbose: print(f"  [peer-brand] {len(parsed['suggested_peers'])} suggestions")
-        return parsed
-    except Exception as e:
-        if verbose: print(f"  [peer-brand] {type(e).__name__}: {str(e)[:120]} — skipping")
-        return {"category_understood": "", "suggested_peers": [], "source": "skipped"}
+    import time
+    last_status = None
+    last_error = ""
+    url = _ENDPOINT.format(model=_MODEL, key=api_key)
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json"},
+    }
+
+    # Try up to 3 times — Gemini occasionally returns 503/overloaded transiently
+    for attempt in range(3):
+        try:
+            r = requests.post(url, json=body, timeout=45)
+            last_status = r.status_code
+            if r.status_code == 200:
+                text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE)
+                parsed = json.loads(text)
+                parsed.setdefault("category_understood", "")
+                parsed.setdefault("suggested_peers", [])
+                parsed["source"] = "gemini"
+                if verbose: print(f"  [peer-brand] {len(parsed['suggested_peers'])} suggestions (attempt {attempt+1})")
+                return parsed
+            if r.status_code in (429, 503):
+                # Retry on transient errors
+                if verbose: print(f"  [peer-brand] HTTP {r.status_code} — retry {attempt+1}/3")
+                time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                continue
+            last_error = f"HTTP {r.status_code}: {r.text[:100]}"
+            break
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {str(e)[:120]}"
+            if verbose: print(f"  [peer-brand] {last_error} — retry {attempt+1}/3")
+            time.sleep(2 ** attempt)
+
+    if verbose: print(f"  [peer-brand] gave up after retries — last: {last_status or last_error}")
+    return {
+        "category_understood": "",
+        "suggested_peers":     [],
+        "source":              "skipped",
+        "skip_reason":         f"Gemini unavailable (last status: {last_status or 'error'})",
+    }
 
 
 def _path_hint(client_url: str) -> str:
@@ -208,8 +230,10 @@ def discover_and_validate(
         "category_understood": suggestions.get("category_understood", ""),
         "validated_peers":     validated,
         "skipped_invalid":     skipped,
+        "all_suggestions":     suggestions.get("suggested_peers", []),  # raw list — analyst can compare
         "units_cost":          total_units,
         "llm_source":          suggestions.get("source", "skipped"),
+        "llm_skip_reason":     suggestions.get("skip_reason", ""),
     }
 
 
