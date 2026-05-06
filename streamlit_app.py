@@ -860,8 +860,15 @@ with tab2:
             except Exception as e:
                 st.warning(f"On-page crawl failed: {e}")
 
-        progress.progress(60, text="Computing gap analysis...")
-        gap = analyze_gap(client, competitors, business_model=bm.primary)
+        progress.progress(60, text="Computing gap analysis (LLM relevance filter)...")
+        # Pass client_url + niche so the LLM relevance filter has scope context
+        from agent.modules.seed_extractor import extract_seeds_from_sitemap as _sx
+        _seeds = _sx(client_url, top_n=5) if client_url else []
+        _niche_hint = ", ".join(_seeds) if _seeds else (niche if niche != "General" else "")
+        gap = analyze_gap(client, competitors,
+                          business_model=bm.primary,
+                          client_url=client_url,
+                          niche_hint=_niche_hint)
 
         progress.progress(75, text="Computing ROI...")
         avg_comp_traffic = int(sum(c.nb_traffic for c in competitors) / len(competitors)) if competitors else 0

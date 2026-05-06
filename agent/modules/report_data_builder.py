@@ -91,6 +91,7 @@ def build_keyword_ranking_comparison_df(
     *,
     max_rows: int = 15,
     min_volume: int = 1000,
+    llm_in_scope: set[str] | None = None,
 ) -> pd.DataFrame:
     """
     Side-by-side ranking comparison for top high-volume keywords.
@@ -103,10 +104,11 @@ def build_keyword_ranking_comparison_df(
     filtered to keywords RELEVANT to the client's catalog (so timothy-hay
     doesn't show up for a dog/cat client).
     """
-    # Catalog-relevance filter: only show keywords that match the client's
-    # category vocabulary (specific + generic tokens)
+    # Catalog-relevance filter: prefer LLM in-scope set (passed by caller),
+    # fall back to token-overlap heuristic when LLM didn't run.
     from agent.modules.gap_analyzer import _client_topic_tokens, _is_relevant_to_client
     specific_tokens, generic_tokens = _client_topic_tokens(client.nb_keywords)
+    llm_set_lower = {k.lower() for k in (llm_in_scope or set())}
 
     # Collect candidate keywords by max volume seen across all sites.
     import re as _re
@@ -115,10 +117,16 @@ def build_keyword_ranking_comparison_df(
         nb = site.nb_keywords[site.nb_keywords["Volume"] >= min_volume]
         for _, r in nb.iterrows():
             kw = str(r["Keyword"]).strip()
+            kw_lower = kw.lower()
             if len(kw) < 3 or not _re.search(r"[A-Za-zऀ-ॿ஀-௿]", kw):
                 continue
-            if (specific_tokens or generic_tokens) and \
-               not _is_relevant_to_client(kw, specific_tokens, generic_tokens):
+            # If we have an LLM in-scope set, use it as the gate.
+            # Otherwise fall back to token heuristic.
+            if llm_set_lower:
+                if kw_lower not in llm_set_lower:
+                    continue
+            elif (specific_tokens or generic_tokens) and \
+                 not _is_relevant_to_client(kw, specific_tokens, generic_tokens):
                 continue
             v = int(r["Volume"])
             if v > candidates.get(kw, 0):
@@ -156,6 +164,7 @@ def build_page_traffic_comparison_df(
     competitors: list[SiteData],
     *,
     max_rows: int = 12,
+    llm_in_scope: set[str] | None = None,
 ) -> pd.DataFrame:
     """
     Page-level traffic comparison — for each top competitor page, find the
@@ -164,21 +173,24 @@ def build_page_traffic_comparison_df(
     Shape:
         Top Keyword | Volume | Client Page Traffic | <comp 1> Traffic | <comp 2> Traffic | <comp 3> Traffic
     """
-    # Catalog-relevance filter — drop pages whose top keyword is unrelated to
-    # the client's catalog (e.g. 'timothy hay' for a dog/cat brand).
+    # Catalog-relevance filter — prefer LLM in-scope set, fallback to token heuristic
     from agent.modules.gap_analyzer import _client_topic_tokens, _is_relevant_to_client
     specific_tokens, generic_tokens = _client_topic_tokens(client.nb_keywords)
+    llm_set_lower = {k.lower() for k in (llm_in_scope or set())}
 
     # Use the union of top pages across competitors as candidates
-    all_top: list[tuple[str, str, int]] = []  # (top_keyword, url, traffic)
+    all_top: list[tuple[str, str, int]] = []
     for comp in competitors:
         pg = comp.pages.copy().sort_values("Traffic", ascending=False).head(40)
         for _, r in pg.iterrows():
             kw = str(r.get("Top keyword", "") or "").strip()
             if not kw: continue
-            if (specific_tokens or generic_tokens) and \
-               not _is_relevant_to_client(kw, specific_tokens, generic_tokens):
-                continue   # out-of-category page — skip
+            if llm_set_lower:
+                if kw.lower() not in llm_set_lower:
+                    continue
+            elif (specific_tokens or generic_tokens) and \
+                 not _is_relevant_to_client(kw, specific_tokens, generic_tokens):
+                continue
             all_top.append((kw, str(r.get("URL", "")), int(r["Traffic"])))
 
     # Group by top_keyword (the same keyword often has competing pages on multiple sites)
@@ -230,12 +242,13 @@ def build_page_traffic_comparison_df(
 
 def build_ahrefs_dict(client: SiteData, competitors: list[SiteData], gap: GapAnalysis) -> dict:
     """Produces the `ahrefs` dict word_report.generate_word_report expects."""
+    in_scope = getattr(gap, "llm_in_scope", set()) or set()
     return {
         "keyword_gaps":            build_keyword_gaps_df(gap),
         "low_hanging_fruit":       build_low_hanging_fruit_df(client),
         "top_comp_pages":          build_top_competitor_pages_df(competitors),
-        "keyword_rank_comparison": build_keyword_ranking_comparison_df(client, competitors),
-        "page_traffic_comparison": build_page_traffic_comparison_df(client, competitors),
+        "keyword_rank_comparison": build_keyword_ranking_comparison_df(client, competitors, llm_in_scope=in_scope),
+        "page_traffic_comparison": build_page_traffic_comparison_df(client, competitors, llm_in_scope=in_scope),
         "big_wins":                gap.big_wins,
         "client_total_traffic":    client.nb_traffic,
     }

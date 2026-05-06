@@ -50,6 +50,8 @@ class GapAnalysis:
     saturated_keywords: list[dict]  = field(default_factory=list)  # client already top-10, growth-limited
     page_count_delta: int           = 0     # avg_competitor_pages - client_pages
     notes:          list[str]       = field(default_factory=list)
+    llm_in_scope:   set             = field(default_factory=set)    # LLM-classified in-scope keyword set (for reuse in comparison tables)
+    llm_scope_description: str      = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -208,6 +210,9 @@ def analyze(
     max_gap_keywords: int = 30,
     saturated_top_n: int = 15,
     business_model: str = "",
+    use_llm_relevance: bool = True,
+    client_url: str = "",
+    niche_hint: str = "",
 ) -> GapAnalysis:
     """Run the full gap analysis a senior analyst would perform manually.
 
@@ -302,6 +307,34 @@ def analyze(
                 competitor_url=comp_url,
                 client_rank="NR" if client_rank_n == 999 else str(int(client_rank_n)),
             )
+
+    # ── LLM-driven catalog-relevance filter (primary; token heuristic above is fallback) ──
+    # Send all candidate gap kws to Gemini in ONE call along with the client's
+    # top kws (for scope). Gemini returns in_scope/out_of_scope sets; we drop
+    # everything not in_scope. This generalises across any vertical (cat litter,
+    # cookware, B2B SaaS, fashion, finance, …) without per-vertical token lists.
+    llm_scope_description = ""
+    llm_dropped_reasons: dict[str, str] = {}
+    llm_in_scope_set: set[str] = set()
+    if use_llm_relevance and gap_rows and client_url:
+        from agent.modules.keyword_relevance_filter import classify_relevance
+        sort_col = "Current organic traffic" if "Current organic traffic" in client_nb.columns else "Volume"
+        client_top_kws = (
+            client_nb.sort_values(sort_col, ascending=False)
+            ["Keyword"].astype(str).tolist()[:25]
+        )
+        llm_result = classify_relevance(
+            client_url=client_url, client_name=client.name,
+            business_model=business_model, niche_hint=niche_hint,
+            client_top_keywords=client_top_kws,
+            candidate_keywords=list(gap_rows.keys()),
+        )
+        if llm_result.get("source") == "gemini":
+            llm_in_scope_set = {k.lower() for k in llm_result["in_scope"]}
+            llm_dropped_reasons = {k.lower(): v for k, v in llm_result.get("reasons", {}).items()}
+            llm_scope_description = llm_result.get("scope_description", "")
+            # Filter gap_rows to in-scope only
+            gap_rows = {k: v for k, v in gap_rows.items() if k.lower() in llm_in_scope_set}
 
     # ── Big-Win Opportunities ──────────────────────────────────────────────
     # Score each gap keyword by a "real-world impact" metric instead of raw volume.
@@ -400,6 +433,10 @@ def analyze(
                 f"clicks ({pct_info:.0f}%) — those don't convert to purchases."
             )
 
+    # LLM scope note (if Gemini classified, show what it understood as the catalog)
+    if llm_scope_description:
+        notes.insert(0, f"🧠 Gemini understood the client's catalog scope as: {llm_scope_description}")
+
     # Catalog-relevance note — what got filtered as out-of-category
     if specific_tokens or generic_tokens:
         unfiltered_avg = sum(c.nb_traffic for c in competitors) / len(competitors)
@@ -454,6 +491,8 @@ def analyze(
         saturated_keywords=saturated,
         page_count_delta=page_delta,
         notes=notes,
+        llm_in_scope=llm_in_scope_set,
+        llm_scope_description=llm_scope_description,
     )
 
 
