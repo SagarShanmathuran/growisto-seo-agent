@@ -966,6 +966,11 @@ with tab2:
             })
         st.dataframe(pd.DataFrame(roi_rows), use_container_width=True, hide_index=True)
 
+        # ── Competitor mis-alignment warning (loud — top of results) ──
+        _misalign = getattr(gap, "competitor_misalignment", "") or ""
+        if _misalign:
+            st.error(f"⚠ **COMPETITOR MIS-ALIGNMENT DETECTED**\n\n{_misalign}")
+
         # ── Big Win Opportunities (actionable highlights) ────────────────
         if gap.big_wins:
             st.markdown("### 🏆 Top Big-Win Opportunities")

@@ -82,6 +82,25 @@ def generate_short_report(
     # ── 1. Cover ──────────────────────────────────────────────────────────────
     _cover_page(doc, client_url, niche, location, potential, summary, date_str)
 
+    # ── Competitor mis-alignment warning (loud — first thing after cover) ──
+    misalign = getattr(gap, "competitor_misalignment", "") or ""
+    if misalign:
+        wp = doc.add_paragraph()
+        wp.paragraph_format.space_before = Pt(8)
+        wp.paragraph_format.space_after  = Pt(4)
+        wr = wp.add_run("⚠ COMPETITOR MIS-ALIGNMENT DETECTED")
+        wr.bold = True
+        wr.font.size = Pt(13)
+        wr.font.color.rgb = RGBColor(0xDC, 0x26, 0x26)   # red
+
+        wp2 = doc.add_paragraph()
+        wp2.paragraph_format.space_after = Pt(6)
+        wp2.paragraph_format.left_indent = Cm(0.4)
+        wr2 = wp2.add_run(misalign)
+        wr2.font.size = Pt(10)
+        wr2.font.color.rgb = RGBColor(0x99, 0x1B, 0x1B)
+        _add_horizontal_rule(doc)
+
     # ── 2. Traffic Comparison ─────────────────────────────────────────────────
     _section_heading(doc, "1.  Traffic Comparison",
                      "Where the client stands vs the competitors selected for analysis")

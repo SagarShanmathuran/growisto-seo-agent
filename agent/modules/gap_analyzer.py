@@ -52,6 +52,7 @@ class GapAnalysis:
     notes:          list[str]       = field(default_factory=list)
     llm_in_scope:   set             = field(default_factory=set)    # LLM-classified in-scope keyword set (for reuse in comparison tables)
     llm_scope_description: str      = ""
+    competitor_misalignment: str    = ""    # Loud warning when chosen competitors aren't category-aligned (Qoruz vs Locobuzz pattern)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -393,6 +394,35 @@ def analyze(
     else:
         achievable_top10_traffic = 0
 
+    # ── Competitor mis-alignment detector ──────────────────────────────────
+    # If the LLM relevance filter dropped most of competitor traffic as
+    # out-of-scope, the chosen competitors aren't really the client's category
+    # peers (e.g. Locobuzz vs Qoruz: social listening platform vs influencer
+    # marketing agency). Surface this loudly so the analyst re-picks instead
+    # of writing recommendations based on the wrong baseline.
+    competitor_misalignment = ""
+    total_comp_traffic = sum(c.nb_traffic for c in competitors)
+    if total_comp_traffic > 0 and llm_in_scope_set:
+        # Sum competitor traffic ONLY for in-scope keywords (across all comps)
+        in_scope_lower = {k.lower() for k in llm_in_scope_set}
+        relevant_comp_traffic = 0
+        for comp, cnb in comp_filtered:
+            if "Current organic traffic" in cnb.columns:
+                relevant_rows = cnb[cnb["Keyword"].astype(str).str.lower().isin(in_scope_lower)]
+                relevant_comp_traffic += int(relevant_rows["Current organic traffic"].sum())
+
+        coverage_pct = (relevant_comp_traffic / total_comp_traffic * 100) if total_comp_traffic else 0
+        relevant_kw_count = len(gap_rows)
+
+        if coverage_pct < 10 or relevant_kw_count < 5:
+            competitor_misalignment = (
+                f"Only {coverage_pct:.0f}% of competitor traffic is relevant to the client's catalog "
+                f"(scope: {llm_scope_description[:120]}). Only {relevant_kw_count} keywords passed the "
+                f"relevance filter. The selected competitors are likely in a different sub-category — "
+                f"re-run Stage 1's 'Find Competitors' with Gemini's peer-brand suggestions to pick "
+                f"category-aligned competitors. Don't ship this report as-is."
+            )
+
     # Saturated: client already top 10 (limited growth upside) — uses filtered client_nb for B2B
     sat = client_nb[client_nb["Current position"] <= 10].sort_values(
         "Volume", ascending=False
@@ -493,6 +523,7 @@ def analyze(
         notes=notes,
         llm_in_scope=llm_in_scope_set,
         llm_scope_description=llm_scope_description,
+        competitor_misalignment=competitor_misalignment,
     )
 
 
