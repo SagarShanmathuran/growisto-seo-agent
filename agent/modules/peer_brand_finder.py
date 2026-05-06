@@ -21,6 +21,8 @@ import requests
 
 
 _MODEL = "gemini-2.5-flash"
+# Fallback chain — when one model is rate-limited, the next typically has fresh quota
+_MODEL_FALLBACKS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 
 
@@ -95,14 +97,15 @@ def suggest_peer_brands(
     import time
     last_status = None
     last_error = ""
-    url = _ENDPOINT.format(model=_MODEL, key=api_key)
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json"},
     }
 
-    # Try up to 3 times — Gemini occasionally returns 503/overloaded transiently
-    for attempt in range(3):
+    # Cycle through model fallback chain — each model has its own per-day quota
+    # so when 2.5-flash is 429-ed, flash-latest or 1.5-flash often still works
+    for model in _MODEL_FALLBACKS:
+        url = _ENDPOINT.format(model=model, key=api_key)
         try:
             r = requests.post(url, json=body, timeout=45)
             last_status = r.status_code
@@ -113,26 +116,27 @@ def suggest_peer_brands(
                 parsed.setdefault("category_understood", "")
                 parsed.setdefault("suggested_peers", [])
                 parsed["source"] = "gemini"
-                if verbose: print(f"  [peer-brand] {len(parsed['suggested_peers'])} suggestions (attempt {attempt+1})")
+                parsed["model"] = model
+                if verbose: print(f"  [peer-brand] {len(parsed['suggested_peers'])} suggestions via {model}")
                 return parsed
             if r.status_code in (429, 503):
-                # Retry on transient errors
-                if verbose: print(f"  [peer-brand] HTTP {r.status_code} — retry {attempt+1}/3")
-                time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                if verbose: print(f"  [peer-brand] {model}: HTTP {r.status_code} — trying next model")
+                time.sleep(0.5)
                 continue
             last_error = f"HTTP {r.status_code}: {r.text[:100]}"
+            if verbose: print(f"  [peer-brand] {model}: {last_error}")
             break
         except Exception as e:
             last_error = f"{type(e).__name__}: {str(e)[:120]}"
-            if verbose: print(f"  [peer-brand] {last_error} — retry {attempt+1}/3")
-            time.sleep(2 ** attempt)
+            if verbose: print(f"  [peer-brand] {model}: {last_error}")
+            continue
 
-    if verbose: print(f"  [peer-brand] gave up after retries — last: {last_status or last_error}")
+    if verbose: print(f"  [peer-brand] all models exhausted — last: {last_status or last_error}")
     return {
         "category_understood": "",
         "suggested_peers":     [],
         "source":              "skipped",
-        "skip_reason":         f"Gemini unavailable (last status: {last_status or 'error'})",
+        "skip_reason":         f"Gemini unavailable across all models (last: {last_status or last_error or 'error'})",
     }
 
 

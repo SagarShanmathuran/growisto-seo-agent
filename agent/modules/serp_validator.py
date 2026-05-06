@@ -37,7 +37,7 @@ _LOC_HINTS = {
 }
 
 
-_GEMINI_MODEL = "gemini-2.5-flash"
+_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
 _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 _SERP_ENDPOINT = "https://www.searchapi.io/api/v1/search"
 
@@ -80,12 +80,13 @@ def _suggest_transactional_keywords(
               .replace("{niche_hint}",     niche_hint or "(unknown)")
               .replace("{location}",       location))
 
-    url = _GEMINI_ENDPOINT.format(model=_GEMINI_MODEL, key=api_key)
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
     }
-    for attempt in range(3):
+    # Cycle through model fallback chain (each has separate per-day quota)
+    for model in _GEMINI_MODELS:
+        url = _GEMINI_ENDPOINT.format(model=model, key=api_key)
         try:
             r = requests.post(url, json=body, timeout=30)
             if r.status_code == 200:
@@ -93,15 +94,15 @@ def _suggest_transactional_keywords(
                 text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE)
                 parsed = json.loads(text)
                 kws = parsed.get("keywords", [])
-                if verbose: print(f"  [serp-validator] Gemini suggested {len(kws)} kws")
+                if verbose: print(f"  [serp-validator] {len(kws)} kws via {model}")
                 return [k for k in kws if isinstance(k, str)][:7]
             if r.status_code in (429, 503):
-                if verbose: print(f"  [serp-validator] Gemini HTTP {r.status_code} — retry {attempt+1}/3")
-                time.sleep(2 ** attempt)
+                if verbose: print(f"  [serp-validator] {model}: HTTP {r.status_code} — trying next")
+                time.sleep(0.5)
                 continue
-            return []
-        except Exception:
-            time.sleep(2 ** attempt)
+        except Exception as e:
+            if verbose: print(f"  [serp-validator] {model}: {type(e).__name__} — trying next")
+            continue
     return []
 
 

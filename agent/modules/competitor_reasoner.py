@@ -22,6 +22,7 @@ import requests
 
 
 _MODEL = "gemini-2.5-flash"
+_MODEL_FALLBACKS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 
 
@@ -231,34 +232,38 @@ def reason(
               .replace("{niche_hint}",     niche_hint or "(unknown — infer from candidate keyword data and client URL)")
               .replace("{candidates_json}", json.dumps(candidates, indent=2)))
 
-    try:
-        url = _ENDPOINT.format(model=_MODEL, key=api_key)
-        body = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json"},
-        }
-        r = requests.post(url, json=body, timeout=45)
-        if r.status_code != 200:
-            if verbose: print(f"  [reasoner] HTTP {r.status_code} — using heuristic fallback")
-            result = _heuristic_fallback(client_ctx, candidates)
-            result["source"] = "heuristic"
-            return result
-        text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE)
-        parsed = json.loads(text)
-        parsed.setdefault("top_3_picks", [])
-        parsed.setdefault("alternates",  [])
-        parsed.setdefault("off_target",  [])
-        parsed.setdefault("summary",     "")
-        parsed.setdefault("warning",     "")
-        parsed["source"] = "gemini"
-        if verbose: print("  [reasoner] picked via Gemini")
-        return parsed
-    except Exception as e:
-        if verbose: print(f"  [reasoner] {type(e).__name__}: {str(e)[:120]} — using heuristic fallback")
-        result = _heuristic_fallback(client_ctx, candidates)
-        result["source"] = "heuristic"
-        return result
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json"},
+    }
+    for model in _MODEL_FALLBACKS:
+        try:
+            r = requests.post(_ENDPOINT.format(model=model, key=api_key), json=body, timeout=45)
+            if r.status_code == 200:
+                text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE)
+                parsed = json.loads(text)
+                parsed.setdefault("top_3_picks", [])
+                parsed.setdefault("alternates",  [])
+                parsed.setdefault("off_target",  [])
+                parsed.setdefault("summary",     "")
+                parsed.setdefault("warning",     "")
+                parsed["source"] = "gemini"
+                parsed["model"] = model
+                if verbose: print(f"  [reasoner] picked via {model}")
+                return parsed
+            if r.status_code in (429, 503):
+                if verbose: print(f"  [reasoner] {model}: HTTP {r.status_code} — trying next model")
+                continue
+            if verbose: print(f"  [reasoner] {model}: HTTP {r.status_code} — heuristic fallback")
+            break
+        except Exception as e:
+            if verbose: print(f"  [reasoner] {model}: {type(e).__name__}: {str(e)[:80]}")
+            continue
+    # All models failed → heuristic fallback
+    result = _heuristic_fallback(client_ctx, candidates)
+    result["source"] = "heuristic"
+    return result
 
 
 if __name__ == "__main__":
