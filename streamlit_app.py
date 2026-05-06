@@ -865,10 +865,15 @@ with tab2:
         from agent.modules.seed_extractor import extract_seeds_from_sitemap as _sx
         _seeds = _sx(client_url, top_n=5) if client_url else []
         _niche_hint = ", ".join(_seeds) if _seeds else (niche if niche != "General" else "")
-        gap = analyze_gap(client, competitors,
-                          business_model=bm.primary,
-                          client_url=client_url,
-                          niche_hint=_niche_hint)
+
+        # Defensive call — if the deployed module is somehow stale, fall back
+        # to the older signature so the analysis still runs (just without LLM filter)
+        import inspect as _inspect
+        _params = _inspect.signature(analyze_gap).parameters
+        _kwargs = {"business_model": bm.primary}
+        if "client_url" in _params: _kwargs["client_url"] = client_url
+        if "niche_hint" in _params: _kwargs["niche_hint"] = _niche_hint
+        gap = analyze_gap(client, competitors, **_kwargs)
 
         progress.progress(75, text="Computing ROI...")
         avg_comp_traffic = int(sum(c.nb_traffic for c in competitors) / len(competitors)) if competitors else 0
