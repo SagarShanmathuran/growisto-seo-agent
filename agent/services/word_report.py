@@ -371,6 +371,40 @@ def generate_word_report(
     # ── Cover page ────────────────────────────────────────────────────────────
     _cover_page(doc, client_url, niche, location, potential, summary, date_str)
 
+    # ── Big Win Opportunities — top of report so it's the first thing seen ──
+    big_wins = ahrefs.get("big_wins", [])
+    if big_wins:
+        _section_heading(
+            doc, "🏆 Top Big-Win Opportunities",
+            "Pages to build first — ranked by the actual traffic competitors capture today",
+        )
+        for i, w in enumerate(big_wins, 1):
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(6)
+            p.paragraph_format.space_after  = Pt(2)
+            run = p.add_run(f"#{i}  {w.keyword}")
+            run.bold = True
+            run.font.size = Pt(13)
+            run.font.color.rgb = _BRAND_DARK_RGB
+
+            stats = doc.add_paragraph()
+            stats.paragraph_format.space_after = Pt(2)
+            sr = stats.add_run(
+                f"Volume: {w.volume:,}/mo  ·  "
+                f"{w.competitor} captures {w.competitor_traffic:,} clicks/mo  ·  "
+                f"Client rank: {w.client_rank}"
+            )
+            sr.font.size = Pt(10)
+            sr.font.color.rgb = _GREY_RGB
+
+            pitch = doc.add_paragraph()
+            pitch.paragraph_format.space_after  = Pt(8)
+            pitch.paragraph_format.left_indent = Cm(0.5)
+            pr = pitch.add_run(f"💡  {w.pitch}")
+            pr.font.size = Pt(10)
+            pr.italic = True
+        _add_horizontal_rule(doc)
+
     # ── ROI Summary (internal-only by default; include_roi=True to show) ────
     if include_roi:
         cur_trf  = roi.get("client_current_traffic", 0)

@@ -794,6 +794,19 @@ with tab2:
             })
         st.dataframe(pd.DataFrame(roi_rows), use_container_width=True, hide_index=True)
 
+        # ── Big Win Opportunities (actionable highlights) ────────────────
+        if gap.big_wins:
+            st.markdown("### 🏆 Top Big-Win Opportunities")
+            st.caption("Ranked by competitor's *actual* captured traffic — not theoretical volume. These are the highest-leverage pages to build/optimise first.")
+            for i, w in enumerate(gap.big_wins, 1):
+                with st.container(border=True):
+                    cols = st.columns([0.5, 4.5, 1.2, 1.2])
+                    cols[0].markdown(f"### **#{i}**")
+                    cols[1].markdown(f"**{w.keyword}**  ·  vol {w.volume:,}/mo")
+                    cols[2].metric("Comp captures", f"{w.competitor_traffic:,} /mo")
+                    cols[3].metric("Client", w.client_rank)
+                    st.markdown(f"💡 _{w.pitch}_")
+
         st.markdown("### 💡 Key Notes")
         for n in gap.notes:
             st.markdown(f"- {n}")

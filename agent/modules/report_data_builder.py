@@ -220,6 +220,7 @@ def build_ahrefs_dict(client: SiteData, competitors: list[SiteData], gap: GapAna
         "top_comp_pages":          build_top_competitor_pages_df(competitors),
         "keyword_rank_comparison": build_keyword_ranking_comparison_df(client, competitors),
         "page_traffic_comparison": build_page_traffic_comparison_df(client, competitors),
+        "big_wins":                gap.big_wins,
         "client_total_traffic":    client.nb_traffic,
     }
 

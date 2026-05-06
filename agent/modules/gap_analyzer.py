@@ -26,6 +26,18 @@ class GapKeyword:
 
 
 @dataclass
+class BigWin:
+    keyword:            str
+    volume:             int
+    competitor_traffic: int    # actual monthly clicks the competitor wins from this keyword
+    competitor:         str
+    competitor_url:     str
+    client_rank:        str
+    score:              float
+    pitch:              str    # one-line analyst-friendly summary
+
+
+@dataclass
 class GapAnalysis:
     client_name:    str
     client_summary: dict
@@ -33,6 +45,7 @@ class GapAnalysis:
     traffic_ratio:  float           = 0.0   # client_traffic / avg_competitor_traffic
     gap_keywords:   list[GapKeyword] = field(default_factory=list)
     gap_total_volume: int           = 0
+    big_wins:       list[BigWin]    = field(default_factory=list)   # top-3 concrete opportunities
     saturated_keywords: list[dict]  = field(default_factory=list)  # client already top-10, growth-limited
     page_count_delta: int           = 0     # avg_competitor_pages - client_pages
     notes:          list[str]       = field(default_factory=list)
@@ -54,9 +67,21 @@ def _is_b2b(business_model: str) -> bool:
     return bm.startswith("b2b") or bm in ("financial", "saas")
 
 
+def _is_ecomm(business_model: str) -> bool:
+    bm = (business_model or "").lower()
+    return bm.startswith("b2c") or bm in ("ecommerce", "retail")
+
+
+def _should_filter_intent(business_model: str) -> bool:
+    """Both B2B and B2C ecomm benefit from intent filtering — informational
+    keywords inflate the gap-volume number with traffic the client can't realistically
+    capture (you can't out-rank a 10-year-old wirecutter listicle as a brand)."""
+    return _is_b2b(business_model) or _is_ecomm(business_model)
+
+
 def _filter_keywords_by_intent(df, business_model: str):
-    """For B2B clients, restrict to commercial+transactional intent (drop info/nav)."""
-    if not _is_b2b(business_model):
+    """Restrict to commercial+transactional intent (drop info/nav/local)."""
+    if not _should_filter_intent(business_model):
         return df
     # Ahrefs CSVs have these as boolean columns
     has_intent_cols = "Commercial" in df.columns and "Transactional" in df.columns
@@ -66,8 +91,9 @@ def _filter_keywords_by_intent(df, business_model: str):
 
 
 def _filter_blog_urls(df, business_model: str, url_col: str = "Current URL"):
-    """For B2B, drop keywords ranking from blog/help/resources URLs (only count service pages)."""
-    if not _is_b2b(business_model) or url_col not in df.columns:
+    """Drop keywords ranking from blog/help/resources URLs — only count
+    service/category/product pages."""
+    if not _should_filter_intent(business_model) or url_col not in df.columns:
         return df
     mask = df[url_col].fillna("").astype(str).apply(lambda u: not bool(_NON_SERVICE_URL_RE.search(u)))
     return df[mask].copy()
@@ -94,13 +120,17 @@ def analyze(
         return GapAnalysis(client.name, client.summary(), notes=["No competitors provided"])
 
     is_b2b = _is_b2b(business_model)
+    intent_filter_on = _should_filter_intent(business_model)
 
     # Lower the volume floor for B2B — transactional keywords are usually low-volume but high-intent.
     if is_b2b:
         min_gap_volume = min(min_gap_volume, 200)
+    elif intent_filter_on:
+        # Ecomm: still allow lower-volume commercial keywords through (e.g. specific SKU searches)
+        min_gap_volume = min(min_gap_volume, 500)
 
-    # For B2B: filter both client and competitor keywords to transactional/commercial + service pages
-    if is_b2b:
+    # Filter client + competitor keywords to commercial/transactional intent (excl. blog/info URLs)
+    if intent_filter_on:
         client_nb = _filter_blog_urls(_filter_keywords_by_intent(client.nb_keywords, business_model),
                                        business_model)
         comp_filtered = []
@@ -112,14 +142,14 @@ def analyze(
         client_nb = client.nb_keywords
         comp_filtered = [(c, c.nb_keywords) for c in competitors]
 
-    # Use FILTERED traffic for the headline ratio when B2B (service-page transactional only)
+    # Use FILTERED traffic for the headline ratio when intent filter is on
     client_signal_traffic = (
-        int(client_nb["Current organic traffic"].sum()) if is_b2b and not client_nb.empty
+        int(client_nb["Current organic traffic"].sum()) if intent_filter_on and not client_nb.empty
         else client.nb_traffic
     )
     avg_comp_signal_traffic = (
         sum(int(cnb["Current organic traffic"].sum()) for _, cnb in comp_filtered) / len(comp_filtered)
-        if is_b2b and comp_filtered
+        if intent_filter_on and comp_filtered
         else sum(c.nb_traffic for c in competitors) / len(competitors)
     )
     traffic_ratio = (client_signal_traffic / avg_comp_signal_traffic) if avg_comp_signal_traffic else 0.0
@@ -156,6 +186,50 @@ def analyze(
                 client_rank="NR" if client_rank_n == 999 else str(int(client_rank_n)),
             )
 
+    # ── Big-Win Opportunities ──────────────────────────────────────────────
+    # Score each gap keyword by a "real-world impact" metric instead of raw volume.
+    # We weight competitor's ACTUAL captured traffic heavily (proves intent) and
+    # boost low-hanging-fruit cases (client ranks 11-30, push to top 5).
+    def _score_big_win(g: GapKeyword) -> float:
+        # Competitor's real traffic is the single best signal — they're winning
+        # this many clicks from this keyword on their actual page.
+        score = g.competitor_traffic * 1.0
+        # Prefer wins where competitor isn't dominating (top-1 fights are hard)
+        if g.competitor_rank > 1: score *= 1.2
+        if g.competitor_rank > 3: score *= 1.1
+        # Bonus when client is partially ranking (LHF) — easier to win than NR
+        if g.client_rank != "NR":
+            try:
+                if 11 <= int(g.client_rank) <= 30:
+                    score *= 1.3
+            except ValueError:
+                pass
+        return score
+
+    big_wins = []
+    if gap_rows:
+        scored = sorted(gap_rows.values(), key=_score_big_win, reverse=True)
+        for g in scored[:3]:
+            score = _score_big_win(g)
+            # Build an analyst-friendly pitch line
+            if g.client_rank == "NR":
+                pitch = (
+                    f"Build a page on '{g.keyword}' (vol {g.volume:,}/mo). "
+                    f"{g.best_competitor} captures {g.competitor_traffic:,} clicks/mo from this — "
+                    f"copy their structure at {g.competitor_url}"
+                )
+            else:
+                pitch = (
+                    f"Push '{g.keyword}' from rank {g.client_rank} to top 5. "
+                    f"{g.best_competitor} (rank {g.competitor_rank}) wins {g.competitor_traffic:,} clicks/mo here."
+                )
+            big_wins.append(BigWin(
+                keyword=g.keyword, volume=g.volume,
+                competitor_traffic=g.competitor_traffic,
+                competitor=g.best_competitor, competitor_url=g.competitor_url,
+                client_rank=g.client_rank, score=round(score, 1), pitch=pitch,
+            ))
+
     gap_list = sorted(gap_rows.values(), key=lambda x: -x.volume)[:max_gap_keywords]
     gap_total_vol = sum(g.volume for g in gap_list)
 
@@ -174,7 +248,7 @@ def analyze(
     ]
 
     notes = []
-    intent_label = "transactional/commercial" if is_b2b else "non-brand"
+    intent_label = "transactional/commercial" if intent_filter_on else "non-brand"
 
     if is_b2b:
         # B2B framing: clicks on service pages with commercial/transactional intent
@@ -187,6 +261,16 @@ def analyze(
             notes.append(
                 f"⚠ Client ranks for almost no commercial-intent keywords on service pages "
                 f"— this is the actual SEO problem to solve. Build dedicated service/feature/pricing pages."
+            )
+    elif intent_filter_on:
+        # Ecomm framing: transactional traffic on category/product pages only
+        info_excluded = client.nb_traffic - client_signal_traffic
+        if info_excluded > 0 and client.nb_traffic > 0:
+            pct_info = info_excluded / client.nb_traffic * 100
+            notes.append(
+                f"📊 Filtered to transactional/commercial intent: client has {len(client_nb)} buyer-intent "
+                f"keyword(s) ({client_signal_traffic:,} clicks/mo). Excluded {info_excluded:,} info/blog "
+                f"clicks ({pct_info:.0f}%) — those don't convert to purchases."
             )
 
     if traffic_ratio < 0.25:
@@ -225,6 +309,7 @@ def analyze(
         traffic_ratio=round(traffic_ratio, 3),
         gap_keywords=gap_list,
         gap_total_volume=gap_total_vol,
+        big_wins=big_wins,
         saturated_keywords=saturated,
         page_count_delta=page_delta,
         notes=notes,
