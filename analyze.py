@@ -109,9 +109,9 @@ def main():
         except Exception as e:
             print(f"   ⚠ Crawl failed: {e}")
 
-    # 4. Gap analysis
+    # 4. Gap analysis (B2B-aware: filters to transactional intent + service pages when applicable)
     print("\n🔎  Computing gap analysis...")
-    gap = analyze_gap(client, competitors)
+    gap = analyze_gap(client, competitors, business_model=bm.primary)
     print(f"   Traffic ratio: {gap.traffic_ratio:.2f} | Gap keywords: {len(gap.gap_keywords)} ({gap.gap_total_volume:,} vol)")
     for note in gap.notes:
         print(f"   • {note}")

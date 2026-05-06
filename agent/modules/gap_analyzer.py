@@ -42,6 +42,37 @@ class GapAnalysis:
         return d
 
 
+_NON_SERVICE_URL_RE = __import__("re").compile(
+    r"/(blog|blogs|glossary|insights|resources|guide|guides|news|articles|"
+    r"learn|help|support|careers|press|about|library|webinar|ebook|whitepaper)/",
+    __import__("re").I,
+)
+
+
+def _is_b2b(business_model: str) -> bool:
+    bm = (business_model or "").lower()
+    return bm.startswith("b2b") or bm in ("financial", "saas")
+
+
+def _filter_keywords_by_intent(df, business_model: str):
+    """For B2B clients, restrict to commercial+transactional intent (drop info/nav)."""
+    if not _is_b2b(business_model):
+        return df
+    # Ahrefs CSVs have these as boolean columns
+    has_intent_cols = "Commercial" in df.columns and "Transactional" in df.columns
+    if not has_intent_cols:
+        return df
+    return df[(df["Commercial"] == True) | (df["Transactional"] == True)].copy()
+
+
+def _filter_blog_urls(df, business_model: str, url_col: str = "Current URL"):
+    """For B2B, drop keywords ranking from blog/help/resources URLs (only count service pages)."""
+    if not _is_b2b(business_model) or url_col not in df.columns:
+        return df
+    mask = df[url_col].fillna("").astype(str).apply(lambda u: not bool(_NON_SERVICE_URL_RE.search(u)))
+    return df[mask].copy()
+
+
 def analyze(
     client: SiteData,
     competitors: list[SiteData],
@@ -49,23 +80,59 @@ def analyze(
     min_gap_volume: int = 3000,
     max_gap_keywords: int = 30,
     saturated_top_n: int = 15,
+    business_model: str = "",
 ) -> GapAnalysis:
-    """Run the full gap analysis a senior analyst would perform manually."""
+    """Run the full gap analysis a senior analyst would perform manually.
+
+    For B2B clients (`business_model` starts with 'b2b' or is 'financial'/'saas'),
+    the analysis restricts keywords to commercial/transactional intent and excludes
+    blog/help/resources URLs — because for B2B, only service-page rankings on
+    transactional intent drive leads. Even 50-100 monthly clicks on a service page
+    can be valuable due to high deal AOV.
+    """
     if not competitors:
         return GapAnalysis(client.name, client.summary(), notes=["No competitors provided"])
 
-    avg_comp_traffic = sum(c.nb_traffic for c in competitors) / len(competitors)
-    traffic_ratio = (client.nb_traffic / avg_comp_traffic) if avg_comp_traffic else 0.0
+    is_b2b = _is_b2b(business_model)
+
+    # Lower the volume floor for B2B — transactional keywords are usually low-volume but high-intent.
+    if is_b2b:
+        min_gap_volume = min(min_gap_volume, 200)
+
+    # For B2B: filter both client and competitor keywords to transactional/commercial + service pages
+    if is_b2b:
+        client_nb = _filter_blog_urls(_filter_keywords_by_intent(client.nb_keywords, business_model),
+                                       business_model)
+        comp_filtered = []
+        for c in competitors:
+            cnb_filtered = _filter_blog_urls(_filter_keywords_by_intent(c.nb_keywords, business_model),
+                                              business_model)
+            comp_filtered.append((c, cnb_filtered))
+    else:
+        client_nb = client.nb_keywords
+        comp_filtered = [(c, c.nb_keywords) for c in competitors]
+
+    # Use FILTERED traffic for the headline ratio when B2B (service-page transactional only)
+    client_signal_traffic = (
+        int(client_nb["Current organic traffic"].sum()) if is_b2b and not client_nb.empty
+        else client.nb_traffic
+    )
+    avg_comp_signal_traffic = (
+        sum(int(cnb["Current organic traffic"].sum()) for _, cnb in comp_filtered) / len(comp_filtered)
+        if is_b2b and comp_filtered
+        else sum(c.nb_traffic for c in competitors) / len(competitors)
+    )
+    traffic_ratio = (client_signal_traffic / avg_comp_signal_traffic) if avg_comp_signal_traffic else 0.0
 
     avg_comp_pages = sum(c.page_count for c in competitors) / len(competitors)
     page_delta = int(avg_comp_pages - client.page_count)
 
-    client_ranks = dict(zip(client.nb_keywords["Keyword"], client.nb_keywords["Current position"]))
+    client_ranks = dict(zip(client_nb["Keyword"], client_nb["Current position"]))
 
     # Gap keywords: any competitor ranks top 10, client NR or rank > 20
+    # For B2B, the comp.nb_keywords has been pre-filtered to transactional/commercial + service pages
     gap_rows: dict[str, GapKeyword] = {}
-    for comp in competitors:
-        cnb = comp.nb_keywords
+    for comp, cnb in comp_filtered:
         top10c = cnb[(cnb["Current position"] <= 10) & (cnb["Volume"] >= min_gap_volume)]
         for _, row in top10c.iterrows():
             kw = row["Keyword"]
@@ -92,8 +159,8 @@ def analyze(
     gap_list = sorted(gap_rows.values(), key=lambda x: -x.volume)[:max_gap_keywords]
     gap_total_vol = sum(g.volume for g in gap_list)
 
-    # Saturated: client already top 10 (limited growth upside)
-    sat = client.nb_keywords[client.nb_keywords["Current position"] <= 10].sort_values(
+    # Saturated: client already top 10 (limited growth upside) — uses filtered client_nb for B2B
+    sat = client_nb[client_nb["Current position"] <= 10].sort_values(
         "Volume", ascending=False
     ).head(saturated_top_n)
     saturated = [
@@ -107,12 +174,28 @@ def analyze(
     ]
 
     notes = []
+    intent_label = "transactional/commercial" if is_b2b else "non-brand"
+
+    if is_b2b:
+        # B2B framing: clicks on service pages with commercial/transactional intent
+        notes.append(
+            f"📊 B2B view: client has {len(client_nb)} {intent_label} keyword(s) on service pages "
+            f"({client_signal_traffic:,} clicks/mo). Total non-brand traffic ({client.nb_traffic:,}) "
+            f"includes blog/info traffic that does not convert to leads."
+        )
+        if len(client_nb) < 10:
+            notes.append(
+                f"⚠ Client ranks for almost no commercial-intent keywords on service pages "
+                f"— this is the actual SEO problem to solve. Build dedicated service/feature/pricing pages."
+            )
+
     if traffic_ratio < 0.25:
-        notes.append(f"Client gets only {traffic_ratio*100:.0f}% of avg competitor traffic — large gap")
+        gap_label = f"{intent_label} traffic" if is_b2b else "traffic"
+        notes.append(f"Client gets only {traffic_ratio*100:.0f}% of avg competitor {gap_label} — large gap")
     elif traffic_ratio < 0.5:
-        notes.append(f"Client gets {traffic_ratio*100:.0f}% of avg competitor traffic — moderate gap")
+        notes.append(f"Client gets {traffic_ratio*100:.0f}% of avg competitor {intent_label} traffic — moderate gap")
     elif traffic_ratio < 1.0:
-        notes.append(f"Client gets {traffic_ratio*100:.0f}% of avg competitor traffic — small gap")
+        notes.append(f"Client gets {traffic_ratio*100:.0f}% of avg competitor {intent_label} traffic — small gap")
     else:
         notes.append(f"Client outranks competitor average — limited room to grow")
 
@@ -123,6 +206,11 @@ def analyze(
         notes.append(f"Massive gap-keyword opportunity: {gap_total_vol:,} monthly search volume across {len(gap_list)} keywords")
     elif gap_total_vol >= 100_000:
         notes.append(f"Significant gap-keyword opportunity: {gap_total_vol:,} monthly volume")
+    elif is_b2b and gap_total_vol >= 5_000:
+        notes.append(
+            f"B2B gap-keyword opportunity: {gap_total_vol:,} monthly volume on commercial intent. "
+            f"For B2B, even 50-100 clicks on service pages is meaningful given high deal AOV."
+        )
 
     if client.traffic_change < -5000:
         notes.append(f"Client traffic declining ({client.traffic_change:+,}) — needs attention")

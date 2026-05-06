@@ -723,7 +723,7 @@ with tab2:
                 st.warning(f"On-page crawl failed: {e}")
 
         progress.progress(60, text="Computing gap analysis...")
-        gap = analyze_gap(client, competitors)
+        gap = analyze_gap(client, competitors, business_model=bm.primary)
 
         progress.progress(75, text="Computing ROI...")
         avg_comp_traffic = int(sum(c.nb_traffic for c in competitors) / len(competitors)) if competitors else 0
