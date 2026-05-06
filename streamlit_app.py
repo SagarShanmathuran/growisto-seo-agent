@@ -25,6 +25,8 @@ from agent.modules.triage_filter         import triage
 from agent.services.roi_calculator       import calculate_roi, calculate_roi_scenarios
 from agent.services.gemini_client        import synthesize_verdict
 from agent.services.word_report          import generate_word_report
+from agent.services.short_report         import generate_short_report
+from agent.modules.page_content_audit    import audit as page_content_audit
 from agent.services.ahrefs_client        import (
     is_configured as ahrefs_is_configured,
     workspace_usage, local_usage_summary,
@@ -750,7 +752,7 @@ with tab2:
         }
         verdict = synthesize_verdict(verdict_input)
 
-        progress.progress(95, text="Generating Word report...")
+        progress.progress(92, text="Generating Word reports...")
         ahrefs_dict = build_ahrefs_dict(client, competitors, gap)
         comp_traffic = build_comp_traffic_dict(competitors)
         docx_bytes = generate_word_report(
@@ -758,6 +760,28 @@ with tab2:
             ai_result=verdict, roi=roi, comp_traffic=comp_traffic,
             ahrefs=ahrefs_dict, site_result=site_result,
             roi_scenarios=roi_scenarios,
+        )
+
+        # ── Short report — focused 5-section format ─────────────────────────
+        progress.progress(96, text="Auditing top page content for short report...")
+        page_audit = None
+        try:
+            # Audit the client's top traffic page (best signal of how categories are built)
+            top_page_url = client_url
+            if not client.pages.empty:
+                top_page_url = str(client.pages.iloc[0]["URL"]) or client_url
+            page_audit = page_content_audit(top_page_url)
+        except Exception as e:
+            st.warning(f"Page content audit failed: {e}")
+
+        short_docx_bytes = generate_short_report(
+            client_url=client_url, client_name=client_name, niche=niche, location=location,
+            ai_result=verdict, gap=gap, comp_traffic=comp_traffic,
+            client_total_traffic=client.nb_traffic,
+            keyword_rank_comparison=ahrefs_dict.get("keyword_rank_comparison", pd.DataFrame()),
+            page_traffic_comparison=ahrefs_dict.get("page_traffic_comparison", pd.DataFrame()),
+            page_audit=page_audit,
+            site_result=site_result,
         )
         progress.progress(100); progress.empty()
 
@@ -820,10 +844,24 @@ with tab2:
         st.dataframe(gaps_df, use_container_width=True, hide_index=True)
 
         st.markdown("---")
-        fname = f"seo_report_{client_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-        st.download_button("📥 Download Word Report", data=docx_bytes, file_name=fname,
-                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                           type="primary")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        full_fname  = f"seo_report_{client_name.replace(' ', '_')}_{ts}.docx"
+        short_fname = f"seo_report_short_{client_name.replace(' ', '_')}_{ts}.docx"
+
+        st.markdown("### 📥 Download Reports")
+        d1, d2 = st.columns(2)
+        d1.download_button(
+            "📄 Short Report (5 sections, sales-ready)",
+            data=short_docx_bytes, file_name=short_fname,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            type="primary", use_container_width=True,
+        )
+        d2.download_button(
+            "📚 Full Report (all sections)",
+            data=docx_bytes, file_name=full_fname,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+        )
 
     # (the warning above already explains what's missing when not ready)
 
