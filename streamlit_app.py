@@ -520,12 +520,70 @@ with tab1:
                 if rr.get("warning"):
                     st.warning(rr["warning"])
 
+                # ── 🔍 SERP cross-check (third confidence layer, opt-in) ─────
+                serp_key = f"serp_validate_{client_url}"
+                serp_data = st.session_state.get(serp_key)
+                if not serp_data:
+                    sc1, sc2 = st.columns([1, 4])
+                    if sc1.button("🔍 Cross-check via SERP",
+                                  help="Run SerpAPI on Gemini-suggested transactional keywords (~₹3-5 cost) "
+                                       "to see which brands actually rank in Google today."):
+                        from agent.modules.serp_validator import validate_via_serp
+                        from agent.modules.business_model_detector import detect as _detect_bm
+                        from agent.modules.seed_extractor import extract_seeds_from_sitemap
+                        with st.spinner("Asking Gemini for transactional kws + running 5–7 SERPs..."):
+                            _bm = _detect_bm(client_url)
+                            _seeds = extract_seeds_from_sitemap(client_url, top_n=5)
+                            _niche = ", ".join(_seeds) if _seeds else (niche if niche != "General" else "")
+                            serp_data = validate_via_serp(
+                                client_url=client_url, client_name=client_name,
+                                business_model=_bm.primary, niche_hint=_niche,
+                                location=location, max_keywords=6,
+                            )
+                            st.session_state[serp_key] = serp_data
+                            st.rerun()
+                    sc2.caption("_The third confidence layer — confirms which brands actually rank for "
+                                "high-intent buyer keywords in Google today._")
+
+                if serp_data:
+                    cost = serp_data.get("cost_estimate", 0)
+                    n_kws = len(serp_data.get("keywords", []))
+                    n_brands = len(serp_data.get("ranking_brands", {}))
+                    st.success(f"✅ SERP check ran on {n_kws} transactional keywords  ·  "
+                               f"Found {n_brands} ranking brands  ·  Estimated cost: ₹{cost:.2f}")
+                    with st.expander(f"🔍 SERP validation details  ·  {n_kws} keywords checked", expanded=False):
+                        st.markdown("**Transactional keywords checked:**")
+                        for k in serp_data.get("keywords", []):
+                            st.markdown(f"- {k}")
+                        if serp_data.get("ranking_brands"):
+                            st.markdown("\n**Top ranking brands across these SERPs:**")
+                            import pandas as _pd
+                            rb_rows = []
+                            for d, info in list(serp_data["ranking_brands"].items())[:15]:
+                                rb_rows.append({
+                                    "Domain":           d,
+                                    "Frequency":        info["frequency"],
+                                    "Avg Position":     info["avg_position"],
+                                    "Best Position":    info["best_position"],
+                                    "Ranks for":        ", ".join(info["in_kws"][:3]),
+                                })
+                            st.dataframe(_pd.DataFrame(rb_rows), hide_index=True, use_container_width=True)
+                        if serp_data.get("errors"):
+                            for e in serp_data["errors"]:
+                                st.warning(e)
+
                 # Build LLM agreement set — picks that Gemini also suggested
                 llm_agree_doms = {
                     s.get("domain", "").lower()
                     for s in comp_result.get("llm_all_suggestions", [])
                 }
                 llm_ran = comp_result.get("llm_status") == "gemini"
+
+                # SERP confirmation set — picks that ranked in actual SERPs
+                serp_confirmed = {
+                    d.lower() for d in (serp_data or {}).get("ranking_brands", {}).keys()
+                }
+                serp_ran = bool(serp_data)
 
                 # Big cards for the top 3
                 comp_lookup = {c["domain"]: c for c in active_comps}
@@ -549,10 +607,24 @@ with tab1:
                         fit_badge = "❓ Gemini didn't run"
                         fit_color = "grey"
 
+                    # SERP-confirmed badge (third layer, opt-in)
+                    if serp_ran:
+                        if d.lower() in serp_confirmed:
+                            serp_badge = "✓ Ranks in SERP"
+                            serp_color = "green"
+                        else:
+                            serp_badge = "⚠ Doesn't rank in SERP for transactional kws"
+                            serp_color = "orange"
+                    else:
+                        serp_badge = ""
+                        serp_color = ""
+
                     with st.container(border=True):
                         cols = st.columns([2.5, 1.0, 1.5, 0.8, 1.2, 1.0])
                         cols[0].markdown(f"### {conf_emoji.get(conf, '🟡')} **{d}**")
                         cols[0].markdown(f"<span style='color:{fit_color};font-size:0.85em;font-weight:600'>{fit_badge}</span>", unsafe_allow_html=True)
+                        if serp_badge:
+                            cols[0].markdown(f"<span style='color:{serp_color};font-size:0.85em;font-weight:600'>{serp_badge}</span>", unsafe_allow_html=True)
                         cols[1].markdown(f"{TYPE_BADGE.get(c.get('type', 'unknown'), '?')}")
                         cols[2].markdown(f"**{c.get('traffic', 0):,}** traffic")
                         cols[3].markdown(f"DR **{c.get('domain_rating', 0):.0f}**")
