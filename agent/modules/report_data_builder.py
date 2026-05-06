@@ -99,9 +99,15 @@ def build_keyword_ranking_comparison_df(
         Keyword | Volume | <client name> | <comp 1> | <comp 2> | <comp 3>
         each cell is the rank position or 'NR'
 
-    Selection: take the union of top-volume keywords across all sites
-    (covers both client's strengths and gaps).
+    Selection: take the union of top-volume keywords across all sites,
+    filtered to keywords RELEVANT to the client's catalog (so timothy-hay
+    doesn't show up for a dog/cat client).
     """
+    # Catalog-relevance filter: only show keywords that match the client's
+    # category vocabulary
+    from agent.modules.gap_analyzer import _client_topic_tokens, _is_relevant_to_client
+    client_tokens = _client_topic_tokens(client.nb_keywords)
+
     # Collect candidate keywords by max volume seen across all sites.
     # Skip junk: keywords with no letters (e.g. just digits) or length < 3.
     import re as _re
@@ -112,6 +118,10 @@ def build_keyword_ranking_comparison_df(
             kw = str(r["Keyword"]).strip()
             if len(kw) < 3 or not _re.search(r"[A-Za-zऀ-ॿ஀-௿]", kw):
                 continue   # require at least one letter (ASCII or Indic)
+            # Drop kws unrelated to the client's catalog (e.g. timothy hay
+            # for a dog/cat brand). Skip filter if no client signal.
+            if client_tokens and not _is_relevant_to_client(kw, client_tokens):
+                continue
             v = int(r["Volume"])
             if v > candidates.get(kw, 0):
                 candidates[kw] = v
@@ -156,14 +166,21 @@ def build_page_traffic_comparison_df(
     Shape:
         Top Keyword | Volume | Client Page Traffic | <comp 1> Traffic | <comp 2> Traffic | <comp 3> Traffic
     """
+    # Catalog-relevance filter — drop pages whose top keyword is unrelated to
+    # the client's catalog (e.g. 'timothy hay' for a dog/cat brand).
+    from agent.modules.gap_analyzer import _client_topic_tokens, _is_relevant_to_client
+    client_tokens = _client_topic_tokens(client.nb_keywords)
+
     # Use the union of top pages across competitors as candidates
     all_top: list[tuple[str, str, int]] = []  # (top_keyword, url, traffic)
     for comp in competitors:
-        pg = comp.pages.copy().sort_values("Traffic", ascending=False).head(20)
+        pg = comp.pages.copy().sort_values("Traffic", ascending=False).head(40)
         for _, r in pg.iterrows():
             kw = str(r.get("Top keyword", "") or "").strip()
-            if kw:
-                all_top.append((kw, str(r.get("URL", "")), int(r["Traffic"])))
+            if not kw: continue
+            if client_tokens and not _is_relevant_to_client(kw, client_tokens):
+                continue   # out-of-category page — skip
+            all_top.append((kw, str(r.get("URL", "")), int(r["Traffic"])))
 
     # Group by top_keyword (the same keyword often has competing pages on multiple sites)
     by_kw: dict[str, int] = {}

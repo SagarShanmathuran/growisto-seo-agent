@@ -99,6 +99,71 @@ def _filter_blog_urls(df, business_model: str, url_col: str = "Current URL"):
     return df[mask].copy()
 
 
+# Stopwords kept short — only obviously generic words that don't carry topic signal.
+_TOPIC_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "of", "to", "in", "for", "with", "on", "at",
+    "by", "from", "as", "is", "are", "be", "this", "that", "your", "our", "we",
+    "us", "you", "best", "top", "buy", "shop", "online", "near", "me", "near me",
+    "free", "cheap", "price", "prices", "cost", "review", "reviews", "vs",
+    "how", "what", "where", "when", "why", "which", "who",
+    # Common e-comm filler
+    "set", "sets", "kit", "pack", "size", "sizes", "type", "types",
+    # Generic intent suffixes
+    "tool", "tools", "platform", "software", "software for", "service", "services",
+    "company", "companies", "brand", "brands",
+})
+
+
+def _client_topic_tokens(client_keywords: __import__("pandas").DataFrame, top_n: int = 200) -> set[str]:
+    """
+    Build the client's "category vocabulary" from their top-traffic non-brand keywords.
+    Only tokens with ≥2 occurrences are kept — that filters incidental words
+    while keeping every category term that actually defines the catalog.
+
+    e.g. for Vinod Cookware: {'kadai', 'pressure', 'cooker', 'tawa', 'kitchen', ...}
+         for Catalyst Pet (dogs/cats): {'dog', 'cat', 'food', 'treats', 'pet', ...}
+    """
+    import re as _re
+    if client_keywords is None or len(client_keywords) == 0:
+        return set()
+
+    # Take top 200 by traffic (or volume if no traffic column)
+    sort_col = "Current organic traffic" if "Current organic traffic" in client_keywords.columns else "Volume"
+    top = client_keywords.sort_values(sort_col, ascending=False).head(top_n)
+
+    token_counts: dict[str, int] = {}
+    for kw in top["Keyword"].astype(str):
+        # Lowercase + split into word tokens
+        toks = _re.findall(r"[a-zA-Zऀ-ॿ஀-௿]+", kw.lower())
+        for t in toks:
+            if len(t) < 3 or t in _TOPIC_STOPWORDS:
+                continue
+            token_counts[t] = token_counts.get(t, 0) + 1
+
+    # Keep tokens that appear in ≥2 keywords — incidental words drop out
+    return {tok for tok, cnt in token_counts.items() if cnt >= 2}
+
+
+def _is_relevant_to_client(keyword: str, client_tokens: set[str]) -> bool:
+    """A competitor's keyword is 'relevant' if at least one of its meaningful
+    tokens overlaps with the client's category vocabulary."""
+    if not client_tokens:
+        return True   # no signal — include everything
+    import re as _re
+    toks = _re.findall(r"[a-zA-Zऀ-ॿ஀-௿]+", str(keyword).lower())
+    meaningful = [t for t in toks if len(t) >= 3 and t not in _TOPIC_STOPWORDS]
+    return any(t in client_tokens for t in meaningful)
+
+
+def _filter_relevance(df, client_tokens: set[str]):
+    """Drop competitor keywords with no overlap with client's category vocab.
+    Skipped when client_tokens is empty (no signal to filter on)."""
+    if not client_tokens:
+        return df
+    mask = df["Keyword"].astype(str).apply(lambda k: _is_relevant_to_client(k, client_tokens))
+    return df[mask].copy()
+
+
 def analyze(
     client: SiteData,
     competitors: list[SiteData],
@@ -142,14 +207,28 @@ def analyze(
         client_nb = client.nb_keywords
         comp_filtered = [(c, c.nb_keywords) for c in competitors]
 
-    # Use FILTERED traffic for the headline ratio when intent filter is on
+    # ── Catalog-relevance filter ───────────────────────────────────────────
+    # Build the client's category vocabulary from their actual ranked keywords,
+    # then drop competitor keywords that share no topic tokens. This is what
+    # stops 'timothy hay' (rabbit food) from polluting a dog/cat client's gap
+    # analysis: the client never ranks for 'timothy' or 'hay', so the keyword
+    # has zero overlap with their catalog vocabulary and gets filtered out.
+    client_tokens = _client_topic_tokens(client_nb)
+    if client_tokens:
+        comp_filtered = [(c, _filter_relevance(cnb, client_tokens)) for c, cnb in comp_filtered]
+
+    # Use FILTERED traffic (intent + relevance) for the headline ratio.
+    # This is what makes the "X× larger" number actually achievable — we only
+    # count traffic competitors get on keywords the client could realistically
+    # compete for given their existing catalog.
+    use_filtered = intent_filter_on or bool(client_tokens)
     client_signal_traffic = (
-        int(client_nb["Current organic traffic"].sum()) if intent_filter_on and not client_nb.empty
+        int(client_nb["Current organic traffic"].sum()) if use_filtered and not client_nb.empty
         else client.nb_traffic
     )
     avg_comp_signal_traffic = (
         sum(int(cnb["Current organic traffic"].sum()) for _, cnb in comp_filtered) / len(comp_filtered)
-        if intent_filter_on and comp_filtered
+        if use_filtered and comp_filtered
         else sum(c.nb_traffic for c in competitors) / len(competitors)
     )
     traffic_ratio = (client_signal_traffic / avg_comp_signal_traffic) if avg_comp_signal_traffic else 0.0
@@ -271,6 +350,20 @@ def analyze(
                 f"📊 Filtered to transactional/commercial intent: client has {len(client_nb)} buyer-intent "
                 f"keyword(s) ({client_signal_traffic:,} clicks/mo). Excluded {info_excluded:,} info/blog "
                 f"clicks ({pct_info:.0f}%) — those don't convert to purchases."
+            )
+
+    # Catalog-relevance note — what got filtered as out-of-category
+    if client_tokens:
+        # Compute the "irrelevant traffic" — competitor clicks on keywords outside client's catalog
+        unfiltered_avg = sum(c.nb_traffic for c in competitors) / len(competitors)
+        if avg_comp_signal_traffic > 0 and unfiltered_avg > avg_comp_signal_traffic:
+            irrelevant_pct = (1 - avg_comp_signal_traffic / unfiltered_avg) * 100
+            top_topics = ", ".join(sorted(client_tokens)[:8])
+            notes.append(
+                f"🎯 Relevance filter: only counted competitor traffic on keywords matching the client's "
+                f"catalog vocabulary ({top_topics}…). Excluded {irrelevant_pct:.0f}% of competitor traffic "
+                f"as out-of-category — that's traffic the client cannot realistically capture without "
+                f"launching new product lines."
             )
 
     if traffic_ratio < 0.25:
