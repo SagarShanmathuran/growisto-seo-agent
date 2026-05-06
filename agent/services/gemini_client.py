@@ -110,7 +110,17 @@ def synthesize_verdict(data: dict, *, verbose: bool = False) -> dict:
         except Exception as e:
             if verbose: print(f"  [gemini] {model}: {type(e).__name__} — trying next")
             continue
-    if verbose: print("  [gemini] all models failed — using template fallback")
+    # All Gemini models exhausted — try Claude Haiku before template fallback
+    from agent.services.claude_client import call_claude_json, is_configured as _claude_ok
+    if _claude_ok():
+        if verbose: print("  [gemini] all Gemini models failed — trying Claude Haiku")
+        parsed = call_claude_json(prompt, verbose=verbose)
+        if parsed and "potential" in parsed and "summary" in parsed:
+            parsed["potential"] = parsed["potential"].upper()
+            if verbose: print("  [gemini] verdict via Claude Haiku")
+            return parsed
+
+    if verbose: print("  [gemini] all LLMs failed — using template fallback")
     return _template_fallback(data)
 
 

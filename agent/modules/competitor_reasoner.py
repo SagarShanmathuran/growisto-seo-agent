@@ -260,7 +260,23 @@ def reason(
         except Exception as e:
             if verbose: print(f"  [reasoner] {model}: {type(e).__name__}: {str(e)[:80]}")
             continue
-    # All models failed → heuristic fallback
+    # All Gemini models failed — try Claude Haiku before falling back to heuristic
+    from agent.services.claude_client import call_claude_json, is_configured as _claude_ok
+    if _claude_ok():
+        if verbose: print("  [reasoner] Gemini exhausted, trying Claude Haiku")
+        parsed = call_claude_json(prompt, verbose=verbose)
+        if parsed and ("top_3_picks" in parsed or "alternates" in parsed):
+            parsed.setdefault("top_3_picks", [])
+            parsed.setdefault("alternates",  [])
+            parsed.setdefault("off_target",  [])
+            parsed.setdefault("summary",     "")
+            parsed.setdefault("warning",     "")
+            parsed["source"] = "claude"
+            parsed["model"] = "claude-haiku-4-5"
+            if verbose: print("  [reasoner] picked via Claude Haiku")
+            return parsed
+
+    # All LLMs failed → deterministic heuristic
     result = _heuristic_fallback(client_ctx, candidates)
     result["source"] = "heuristic"
     return result

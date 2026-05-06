@@ -103,6 +103,17 @@ def _suggest_transactional_keywords(
         except Exception as e:
             if verbose: print(f"  [serp-validator] {model}: {type(e).__name__} — trying next")
             continue
+
+    # All Gemini models failed — try Claude Haiku
+    from agent.services.claude_client import call_claude_json, is_configured as _claude_ok
+    if _claude_ok():
+        if verbose: print("  [serp-validator] Gemini exhausted, trying Claude Haiku")
+        parsed = call_claude_json(prompt, verbose=verbose)
+        if parsed and "keywords" in parsed:
+            kws = parsed.get("keywords", [])
+            if verbose: print(f"  [serp-validator] {len(kws)} kws via Claude Haiku")
+            return [k for k in kws if isinstance(k, str)][:7]
+
     return []
 
 

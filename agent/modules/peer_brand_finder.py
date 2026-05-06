@@ -131,12 +131,25 @@ def suggest_peer_brands(
             if verbose: print(f"  [peer-brand] {model}: {last_error}")
             continue
 
+    # All Gemini models exhausted — try Claude Haiku as last resort
+    if verbose: print(f"  [peer-brand] all Gemini models exhausted — trying Claude Haiku")
+    from agent.services.claude_client import call_claude_json, is_configured as _claude_ok
+    if _claude_ok():
+        parsed = call_claude_json(prompt, verbose=verbose)
+        if parsed and "suggested_peers" in parsed:
+            parsed.setdefault("category_understood", "")
+            parsed.setdefault("suggested_peers", [])
+            parsed["source"] = "claude"
+            parsed["model"] = "claude-haiku-4-5"
+            if verbose: print(f"  [peer-brand] {len(parsed['suggested_peers'])} suggestions via Claude Haiku")
+            return parsed
+
     if verbose: print(f"  [peer-brand] all models exhausted — last: {last_status or last_error}")
     return {
         "category_understood": "",
         "suggested_peers":     [],
         "source":              "skipped",
-        "skip_reason":         f"Gemini unavailable across all models (last: {last_status or last_error or 'error'})",
+        "skip_reason":         f"All LLMs unavailable (Gemini last: {last_status or last_error or 'error'}; Claude: not configured or credits exhausted)",
     }
 
 

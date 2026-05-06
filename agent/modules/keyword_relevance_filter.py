@@ -154,13 +154,32 @@ def classify_relevance(
             if verbose: print(f"  [kw-relevance] {model}: {last_error}")
             continue
 
+    # All Gemini models 429/503 — fallback to Claude Haiku
+    from agent.services.claude_client import call_claude_json, is_configured as _claude_ok
+    if _claude_ok():
+        if verbose: print("  [kw-relevance] Gemini exhausted, trying Claude Haiku")
+        parsed = call_claude_json(prompt, verbose=verbose)
+        if parsed and ("in_scope_keywords" in parsed or "out_of_scope_keywords" in parsed):
+            in_scope = {str(k).lower().strip() for k in parsed.get("in_scope_keywords", [])}
+            out_scope = {str(k).lower().strip() for k in parsed.get("out_of_scope_keywords", [])}
+            reasons = {str(k).lower().strip(): str(v) for k, v in parsed.get("out_of_scope_reasons", {}).items()}
+            if verbose: print(f"  [kw-relevance] {len(in_scope)} in-scope, {len(out_scope)} out-of-scope via Claude Haiku")
+            return {
+                "scope_description": parsed.get("scope_description", ""),
+                "in_scope":          in_scope,
+                "out_of_scope":      out_scope,
+                "reasons":           reasons,
+                "source":            "claude",
+                "model":             "claude-haiku-4-5",
+            }
+
     return {
         "scope_description": "",
         "in_scope":          set(),
         "out_of_scope":      set(),
         "reasons":           {},
         "source":            "skipped",
-        "skip_reason":       f"Gemini unavailable (last: {last_status or last_error or 'unknown'})",
+        "skip_reason":       f"All LLMs unavailable (Gemini last: {last_status or last_error or 'unknown'}; Claude: not configured or credits exhausted)",
     }
 
 
