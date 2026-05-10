@@ -1,5 +1,5 @@
 {
-  "name": "seo-potential-plugin",
+  "name": "growisto-seo",
   "version": "0.1.0",
   "description": "Two skills for SEO outreach potential analysis. Skill 1 finds the right competitors for a URL via Ahrefs + SerpAPI + site scan. Skill 2 takes Ahrefs CSV dumps for client + competitors and produces a gap-analysis report with the realistic traffic capture target.",
   "author": {
