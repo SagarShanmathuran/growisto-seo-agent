@@ -1,0 +1,14 @@
+{
+  "name": "growisto-seo-personal",
+  "owner": {
+    "name": "Sagar Shanmathuran",
+    "email": "seo-tools@growisto.com"
+  },
+  "plugins": [
+    {
+      "name": "growisto-seo",
+      "source": "./seo-plugins",
+      "description": "SEO competitor discovery + gap analysis via Ahrefs. Two skills: /seo-find-competitors and /seo-gap-analysis."
+    }
+  ]
+}
