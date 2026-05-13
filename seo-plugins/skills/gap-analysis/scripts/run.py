@@ -55,8 +55,79 @@ def _read_ahrefs_csv(path: str | Path) -> pd.DataFrame:
     raise ValueError(f"Could not parse {path}")
 
 
+def _is_top_pages_format(df: pd.DataFrame) -> bool:
+    """Detect Ahrefs Top Pages export: has a 'Top keyword' column (or variant)."""
+    cols_lower = {c.lower().strip() for c in df.columns}
+    return any(c == "top keyword" or c.startswith("top keyword ") or c.startswith("top keyword:")
+               for c in cols_lower)
+
+
+def _normalise_top_pages_format(df: pd.DataFrame) -> pd.DataFrame:
+    """Map Ahrefs Top Pages columns to the keyword-schema run.py expects.
+
+    Each row in Top Pages export = one URL + its top-ranking keyword. We treat
+    the top keyword as if it were the row's primary keyword for gap analysis.
+    """
+    rename: dict[str, str] = {}
+    intent_combined_col = None
+
+    for col in df.columns:
+        cl = col.lower().strip()
+        # The keyword itself
+        if cl == "top keyword":
+            rename[col] = "Keyword"
+        # Volume variants
+        elif cl in ("top keyword: volume", "top keyword volume", "volume"):
+            rename[col] = "Volume"
+        # Position variants
+        elif cl in ("top keyword: position", "top keyword position", "position"):
+            rename[col] = "Current position"
+        # Traffic — Top Pages CSV usually has page-level traffic; use that as
+        # the keyword's traffic (the top kw drives most of a page's traffic)
+        elif cl in ("current traffic", "organic traffic", "traffic"):
+            rename[col] = "Current organic traffic"
+        # URL
+        elif cl in ("current url", "url", "page url"):
+            rename[col] = "Current URL"
+        # Intent — Ahrefs sometimes ships a single comma-joined column
+        elif cl in ("top keyword: intents", "top keyword intents",
+                    "intents", "intent"):
+            intent_combined_col = col
+
+    out = df.rename(columns=rename) if rename else df.copy()
+
+    # If intent came as a single combined column, expand into boolean flags
+    if intent_combined_col and "Commercial" not in out.columns:
+        intents = out[intent_combined_col].astype(str).str.lower()
+        out["Commercial"]    = intents.str.contains("commercial",    na=False)
+        out["Transactional"] = intents.str.contains("transactional", na=False)
+        out["Branded"]       = intents.str.contains("branded",       na=False)
+
+    # Some Top Pages exports omit Branded entirely. We need to be conservative:
+    # mark all as not-branded if missing, so we don't accidentally filter
+    # everything out downstream.
+    if "Branded" not in out.columns:
+        out["Branded"] = False
+
+    # Same for Commercial/Transactional — if missing, mark all True so the
+    # intent filter doesn't drop everything (Top Pages export is intent-light
+    # in older formats).
+    if "Commercial" not in out.columns:
+        out["Commercial"] = True
+    if "Transactional" not in out.columns:
+        out["Transactional"] = True
+
+    return out
+
+
 def _normalise_kw_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Rename snapshot-format columns to comparison-format names we use downstream."""
+    """Map any Ahrefs export (Organic Keywords or Top Pages, snapshot or comparison)
+    onto the canonical keyword-schema run.py uses downstream."""
+    # If it's a Top Pages export, hand off to the dedicated normaliser first
+    if _is_top_pages_format(df):
+        df = _normalise_top_pages_format(df)
+
+    # Then apply standard snapshot→comparison aliases
     rename = {}
     for canonical, alts in {
         "Current organic traffic":  ["Organic traffic"],
@@ -73,14 +144,24 @@ def _normalise_kw_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_keywords(path: str | Path) -> pd.DataFrame:
-    df = _normalise_kw_columns(_read_ahrefs_csv(path))
+    raw = _read_ahrefs_csv(path)
+    is_top_pages = _is_top_pages_format(raw)
+    df = _normalise_kw_columns(raw)
     required = ["Keyword", "Branded", "Volume", "Current position", "Current organic traffic"]
     missing = [c for c in required if c not in df.columns]
     if missing:
-        raise ValueError(f"CSV {path} missing columns: {missing}. Got: {list(df.columns)}")
+        raise ValueError(
+            f"CSV {path} missing columns after normalising: {missing}. "
+            f"Got: {list(df.columns)}. "
+            f"Detected format: {'top_pages' if is_top_pages else 'organic_keywords'}"
+        )
     df["Current position"]        = pd.to_numeric(df["Current position"], errors="coerce")
     df["Volume"]                  = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
     df["Current organic traffic"] = pd.to_numeric(df["Current organic traffic"], errors="coerce").fillna(0)
+    # Drop rows where Keyword is null/empty (Top Pages export sometimes has
+    # blank top-keyword rows for image/non-textual results)
+    df = df[df["Keyword"].astype(str).str.strip().str.len() > 0].copy()
+    df.attrs["source_format"] = "top_pages" if is_top_pages else "organic_keywords"
     return df
 
 
@@ -116,13 +197,22 @@ def compute_gap_keywords(client_df: pd.DataFrame,
                          comps: list[tuple[str, pd.DataFrame]],
                          min_gap_volume: int = 500,
                          max_gap_keywords: int = 30) -> list[dict]:
-    client_ranks = dict(zip(client_df["Keyword"], client_df["Current position"]))
+    # Build keyword -> {position, url} lookup so we can surface the client's
+    # current page (if any) for page-level recommendations
+    client_lookup: dict[str, dict] = {}
+    has_url_col = "Current URL" in client_df.columns
+    for _, r in client_df.iterrows():
+        client_lookup[r["Keyword"]] = {
+            "position": r["Current position"],
+            "url":      str(r.get("Current URL", "") or "") if has_url_col else "",
+        }
     gap_rows: dict[str, dict] = {}
     for name, cnb in comps:
         top10 = cnb[(cnb["Current position"] <= 10) & (cnb["Volume"] >= min_gap_volume)]
         for _, row in top10.iterrows():
             kw = row["Keyword"]
-            client_pos = client_ranks.get(kw)
+            client_info = client_lookup.get(kw, {})
+            client_pos = client_info.get("position")
             client_pos_n = client_pos if pd.notna(client_pos) else 999
             if client_pos_n <= 20:
                 continue
@@ -138,8 +228,86 @@ def compute_gap_keywords(client_df: pd.DataFrame,
                 "competitor_traffic": int(row.get("Current organic traffic", 0) or 0),
                 "competitor_url":     str(row.get("Current URL", "") or ""),
                 "client_rank":        "NR" if client_pos_n == 999 else str(int(client_pos_n)),
+                "client_url":         client_info.get("url", "") if client_pos_n < 999 else "",
             }
     return sorted(gap_rows.values(), key=lambda x: -x["volume"])[:max_gap_keywords]
+
+
+# ── Page-level opportunity aggregation ───────────────────────────────────────
+
+def _page_slug(url: str) -> str:
+    """Pull a readable label from a URL — last path segment with hyphens→spaces."""
+    if not url:
+        return "(unknown page)"
+    from urllib.parse import urlparse
+    try:
+        p = urlparse(url)
+        segments = [s for s in p.path.strip("/").split("/") if s]
+        last = segments[-1] if segments else (p.netloc or "(homepage)")
+        # Strip .html / .php / query bits
+        last = re.split(r"\.(?:html?|php|aspx)$", last, flags=re.I)[0]
+        return last.replace("-", " ").replace("_", " ").strip() or "(page)"
+    except Exception:
+        return "(page)"
+
+
+def page_opportunities(gap_kws: list[dict], top_n: int = 5) -> list[dict]:
+    """Group gap keywords by competitor page URL. Each group = one page-level
+    opportunity. Ranked by total competitor traffic the page captures from
+    in-scope kws. Each entry knows whether the client has an existing page
+    to optimise or needs to build a new one."""
+    pages: dict[str, dict] = {}
+    for g in gap_kws:
+        url = g.get("competitor_url") or ""
+        comp = g.get("best_competitor", "")
+        key = f"{comp}||{url}" if url else f"{comp}||{g['keyword']}"
+        if key not in pages:
+            pages[key] = {
+                "competitor":              comp,
+                "competitor_url":          url,
+                "page_label":              _page_slug(url),
+                "keywords":                [],
+                "total_search_volume":     0,
+                "competitor_traffic_capture": 0,
+                "best_competitor_rank":    99,
+                "client_existing_pages":   set(),
+                "client_has_weak_ranking": False,
+            }
+        p = pages[key]
+        p["keywords"].append({
+            "kw":      g["keyword"],
+            "vol":     g["volume"],
+            "cr":      g["competitor_rank"],
+            "client_rank": g.get("client_rank", "NR"),
+        })
+        p["total_search_volume"]       += g["volume"]
+        p["competitor_traffic_capture"] += g["competitor_traffic"]
+        if g["competitor_rank"] < p["best_competitor_rank"]:
+            p["best_competitor_rank"] = g["competitor_rank"]
+        if g.get("client_rank") and g["client_rank"] != "NR":
+            try:
+                if 11 <= int(g["client_rank"]) <= 30:
+                    p["client_has_weak_ranking"] = True
+            except ValueError:
+                pass
+            if g.get("client_url"):
+                p["client_existing_pages"].add(g["client_url"])
+
+    # Tidy + label
+    result = []
+    for p in pages.values():
+        p["keywords"].sort(key=lambda k: -k["vol"])
+        p["top_keyword"]    = p["keywords"][0]["kw"] if p["keywords"] else ""
+        p["keyword_count"]  = len(p["keywords"])
+        p["action_type"]    = (
+            "OPTIMISE EXISTING PAGE" if p["client_has_weak_ranking"] or p["client_existing_pages"]
+            else "BUILD NEW PAGE"
+        )
+        p["client_existing_pages"] = sorted(p["client_existing_pages"])
+        result.append(p)
+
+    result.sort(key=lambda p: -p["competitor_traffic_capture"])
+    return result[:top_n]
 
 
 def _score_big_win(g: dict) -> float:
@@ -155,20 +323,20 @@ def _score_big_win(g: dict) -> float:
     return score
 
 
-def big_wins(gap_kws: list[dict], top_n: int = 3) -> list[dict]:
+def big_wins(gap_kws: list[dict], top_n: int = 3, client_name: str = "Your site") -> list[dict]:
     scored = sorted(gap_kws, key=_score_big_win, reverse=True)
     out = []
     for g in scored[:top_n]:
         if g["client_rank"] == "NR":
             pitch = (
-                f"Build a page on '{g['keyword']}' (vol {g['volume']:,}/mo). "
-                f"{g['best_competitor']} captures {g['competitor_traffic']:,} clicks/mo from this — "
-                f"copy their structure at {g['competitor_url']}"
+                f"Build a dedicated page on '{g['keyword']}' (search volume {g['volume']:,}/mo). "
+                f"{g['best_competitor']} currently captures {g['competitor_traffic']:,} clicks/mo from this term — "
+                f"reference page structure: {g['competitor_url']}"
             )
         else:
             pitch = (
-                f"Push '{g['keyword']}' from rank {g['client_rank']} to top 5. "
-                f"{g['best_competitor']} (rank {g['competitor_rank']}) wins {g['competitor_traffic']:,} clicks/mo here."
+                f"Push '{g['keyword']}' from rank {g['client_rank']} into the top 5. "
+                f"{g['best_competitor']} (rank {g['competitor_rank']}) captures {g['competitor_traffic']:,} clicks/mo on this term today."
             )
         out.append({**g, "pitch": pitch, "score": round(_score_big_win(g), 1)})
     return out
@@ -183,6 +351,7 @@ def write_report(out_path: Path,
                  verdict_text: str,
                  gap_kws: list[dict], wins: list[dict],
                  achievable_top10: int,
+                 page_opps: list[dict] | None = None,
                  misalignment: str = "",
                  niche: str = "General") -> None:
     from docx import Document
@@ -227,61 +396,119 @@ def write_report(out_path: Path,
 
     # Traffic comparison
     th = doc.add_paragraph()
-    tr_run = th.add_run("Traffic Comparison")
+    tr_run = th.add_run("Organic Traffic Benchmark")
     tr_run.bold = True; tr_run.font.size = Pt(14); tr_run.font.color.rgb = BRAND
-    table = doc.add_table(rows=1, cols=4)
+    table = doc.add_table(rows=1, cols=3)
     table.style = "Light Grid Accent 1"
     hdr = table.rows[0].cells
-    hdr[0].text = "Site"; hdr[1].text = "Role"; hdr[2].text = "Non-brand traffic"; hdr[3].text = "Gap"
+    hdr[0].text = "Site"
+    hdr[1].text = "Non-branded organic traffic (monthly)"
+    hdr[2].text = "Gap vs " + client_name
+    # Client row (bolded via run, named explicitly — no "CLIENT" label)
     row = table.add_row().cells
-    row[0].text = client_name; row[1].text = "★ CLIENT"
-    row[2].text = f"{client_traffic:,}"; row[3].text = "—"
+    for cell in row:
+        for p in cell.paragraphs:
+            p.clear()
+    row[0].paragraphs[0].add_run(client_name).bold = True
+    row[1].paragraphs[0].add_run(f"{client_traffic:,}").bold = True
+    row[2].paragraphs[0].add_run("—").bold = True
     for cname, ctraf in sorted(comps, key=lambda x: -x[1]):
         row = table.add_row().cells
-        row[0].text = cname; row[1].text = "Competitor"
-        row[2].text = f"{ctraf:,}"
-        row[3].text = f"{ctraf / client_traffic:.1f}x" if client_traffic else "—"
+        row[0].text = cname
+        row[1].text = f"{ctraf:,}"
+        row[2].text = f"{ctraf / client_traffic:.1f}x" if client_traffic else "—"
 
     if achievable_top10 > 0:
         ap = doc.add_paragraph()
         ar = ap.add_run(
-            f"\n🎯 Realistic 6-12 month target: ~{achievable_top10:,} clicks/month "
-            f"from top 10 in-scope gap keywords (see Big Wins below)."
+            f"\nProjected 6-12 month organic traffic opportunity: ~{achievable_top10:,} clicks/month "
+            f"from the top 10 in-scope gap keywords (see priority opportunities below)."
         )
         ar.bold = True; ar.font.color.rgb = GREEN; ar.font.size = Pt(11)
 
-    # Big Wins
+    # Priority Opportunities — PAGE-LEVEL
     doc.add_paragraph()
     wh = doc.add_paragraph()
-    wr2 = wh.add_run("🏆 Top Big-Win Opportunities")
+    wr2 = wh.add_run("Priority Page-Level Opportunities")
     wr2.bold = True; wr2.font.size = Pt(14); wr2.font.color.rgb = BRAND
-    for i, w in enumerate(wins, 1):
-        p = doc.add_paragraph()
-        run = p.add_run(f"#{i}  {w['keyword']}")
-        run.bold = True; run.font.size = Pt(13); run.font.color.rgb = DARK
-        sp = doc.add_paragraph()
-        sr = sp.add_run(f"Volume: {w['volume']:,}/mo  ·  "
-                         f"{w['best_competitor']} captures {w['competitor_traffic']:,} clicks/mo  ·  "
-                         f"Client rank: {w['client_rank']}")
-        sr.font.size = Pt(10); sr.font.color.rgb = GREY
-        pp = doc.add_paragraph()
-        pp.paragraph_format.left_indent = Cm(0.5)
-        pr = pp.add_run(f"💡  {w['pitch']}")
-        pr.italic = True; pr.font.size = Pt(10)
 
-    # Top in-scope keywords table
+    if not page_opps:
+        doc.add_paragraph("No page-level opportunities computed.").runs[0].font.size = Pt(10)
+    else:
+        for i, pg in enumerate(page_opps, 1):
+            # Headline: page topic + action type
+            hp = doc.add_paragraph()
+            hr = hp.add_run(f"#{i}  {pg['page_label'].title()}  —  {pg['action_type']}")
+            hr.bold = True; hr.font.size = Pt(13); hr.font.color.rgb = DARK
+
+            # Quick stats line
+            sp = doc.add_paragraph()
+            sr = sp.add_run(
+                f"Ranks for {pg['keyword_count']} in-scope keywords  ·  "
+                f"Combined search volume: {pg['total_search_volume']:,}/mo  ·  "
+                f"{pg['competitor']} captures {pg['competitor_traffic_capture']:,} clicks/mo"
+            )
+            sr.font.size = Pt(10); sr.font.color.rgb = GREY
+
+            # Reference URL
+            ref = doc.add_paragraph()
+            ref.paragraph_format.left_indent = Cm(0.5)
+            rrun = ref.add_run(f"Reference page (competitor): {pg['competitor_url']}")
+            rrun.font.size = Pt(9); rrun.italic = True; rrun.font.color.rgb = GREY
+
+            # Client's existing pages (if any) for OPTIMISE actions
+            if pg["client_existing_pages"]:
+                cp = doc.add_paragraph()
+                cp.paragraph_format.left_indent = Cm(0.5)
+                cpr = cp.add_run(
+                    f"{client_name} existing page(s) to optimise: {', '.join(pg['client_existing_pages'][:3])}"
+                )
+                cpr.font.size = Pt(9); cpr.italic = True
+
+            # Top keywords this page targets (cluster preview, 3-5)
+            kp = doc.add_paragraph()
+            kp.paragraph_format.left_indent = Cm(0.5)
+            kw_preview = "  •  ".join(
+                f"{k['kw']} ({k['vol']:,}/mo)" for k in pg["keywords"][:5]
+            )
+            kpr = kp.add_run(f"Keyword cluster: {kw_preview}")
+            kpr.font.size = Pt(9)
+
+            # Recommendation
+            rec = doc.add_paragraph()
+            rec.paragraph_format.left_indent = Cm(0.5)
+            if pg["action_type"] == "OPTIMISE EXISTING PAGE":
+                rec_text = (
+                    f"Strengthen {client_name}'s existing page targeting this cluster. "
+                    f"Currently ranking outside top 10 — on-page optimisation, content depth, "
+                    f"and internal linking from authority pages should drive material gains."
+                )
+            else:
+                rec_text = (
+                    f"Build a dedicated category page for {pg['page_label']}. "
+                    f"Reference structure: {pg['competitor_url']}. "
+                    f"Targeting this cluster could capture a meaningful share of "
+                    f"{pg['competitor_traffic_capture']:,} clicks/mo currently flowing to {pg['competitor']}."
+                )
+            rrec = rec.add_run(rec_text)
+            rrec.font.size = Pt(10); rrec.italic = True
+
+    # Priority keyword gap table
     doc.add_paragraph()
     kh = doc.add_paragraph()
-    kr = kh.add_run("Top In-Scope Gap Keywords (sorted by competitor traffic)")
+    kr = kh.add_run("Priority Keyword Gap (sorted by competitor traffic captured)")
     kr.bold = True; kr.font.size = Pt(14); kr.font.color.rgb = BRAND
     kt = doc.add_table(rows=1, cols=5)
     kt.style = "Light Grid Accent 1"
     hdr = kt.rows[0].cells
-    hdr[0].text = "Keyword"; hdr[1].text = "Vol"; hdr[2].text = "Comp"
-    hdr[3].text = "Comp rank"; hdr[4].text = "Comp traffic"
+    hdr[0].text = "Keyword"
+    hdr[1].text = "Monthly search volume"
+    hdr[2].text = "Best-ranking competitor"
+    hdr[3].text = "Competitor rank"
+    hdr[4].text = "Competitor traffic captured (mo)"
     for k in sorted(gap_kws, key=lambda x: -x["competitor_traffic"])[:15]:
         row = kt.add_row().cells
-        row[0].text = k["keyword"][:40]
+        row[0].text = k["keyword"][:50]
         row[1].text = f"{k['volume']:,}"
         row[2].text = k["best_competitor"]
         row[3].text = str(k["competitor_rank"])
@@ -305,11 +532,20 @@ def detect_misalignment(client_traffic: int, comps_filtered_dfs: list[pd.DataFra
             mask = cnb["Keyword"].astype(str).str.lower().isin(in_scope_lower)
             relevant_traffic += int(cnb[mask]["Current organic traffic"].sum())
     coverage_pct = (relevant_traffic / comps_total_traffic) * 100
-    if coverage_pct < 10 or gap_kw_count < 5:
-        return (f"Only {coverage_pct:.0f}% of competitor traffic is in the client's catalog scope, "
-                f"and {gap_kw_count} keywords passed the relevance filter. The chosen competitors "
-                f"may be in a different sub-category. Re-run /seo-find-competitors and pick "
-                f"category-aligned peers before sharing this report.")
+    # Only fire when there's almost no overlap — analyst already picked the
+    # competitors, so the threshold should flag genuinely wrong picks, not
+    # cases where competitors happen to be broader (gold + silver) than the
+    # client (diamond-only). 19 in-scope kws is a normal narrow B2C catalog.
+    if gap_kw_count < 3:
+        return (f"Only {gap_kw_count} keywords passed the catalog-scope filter. "
+                f"This usually means the competitor pick is wrong OR the client's "
+                f"product range is too narrow to compete on these competitors' terms. "
+                f"Verify before sharing.")
+    if coverage_pct < 2:
+        return (f"In-scope keywords represent only {coverage_pct:.1f}% of competitor traffic. "
+                f"The competitor catalogs are much broader than the client's — the bulk of "
+                f"their traffic is on products the client doesn't sell. The in-scope opportunity "
+                f"below is real, but it's a small slice of the competitor pie.")
     return ""
 
 
@@ -327,6 +563,10 @@ def main() -> int:
     p.add_argument("--output-dir",    default="/tmp")
     p.add_argument("--in-scope-keywords", default=None,
                    help="Optional JSON list of keywords Claude marked in-scope (final pass)")
+    p.add_argument("--verdict-text", default=None,
+                   help="Verdict prose to inject into the DOCX (max ~600 chars)")
+    p.add_argument("--verdict-file", default=None,
+                   help="Read verdict prose from file (alternative to --verdict-text)")
     p.add_argument("--finalize",      action="store_true",
                    help="With --in-scope-keywords, generate the final DOCX report")
     args = p.parse_args()
@@ -341,13 +581,19 @@ def main() -> int:
 
     print(f"[gap] Loading {args.client_name}...", file=sys.stderr)
     client_df = load_keywords(args.client_csv)
+    client_format = client_df.attrs.get("source_format", "organic_keywords")
+    print(f"[gap]   -> detected format: {client_format} ({len(client_df)} rows)", file=sys.stderr)
     client_nb = client_df[client_df["Branded"] == False].copy()
     client_traffic = int(client_nb["Current organic traffic"].sum())
 
     print(f"[gap] Loading {len(competitors)} competitor(s)...", file=sys.stderr)
     comp_data = []
+    comp_formats = []
     for name, csv_path in competitors:
         df = load_keywords(csv_path)
+        fmt = df.attrs.get("source_format", "organic_keywords")
+        comp_formats.append((name, fmt, len(df)))
+        print(f"[gap]   {name}: {fmt} ({len(df)} rows)", file=sys.stderr)
         nb = df[df["Branded"] == False].copy()
         comp_data.append((name, nb, int(nb["Current organic traffic"].sum())))
 
@@ -357,6 +603,7 @@ def main() -> int:
 
     # Apply Claude's in-scope keyword filter if provided
     in_scope_set: set[str] = set()
+    rejected_by_serp_guard: list[str] = []
     if args.in_scope_keywords:
         in_scope_data = json.loads(Path(args.in_scope_keywords).read_text())
         if isinstance(in_scope_data, list):
@@ -365,13 +612,38 @@ def main() -> int:
         elif isinstance(in_scope_data, dict) and "in_scope" in in_scope_data:
             in_scope_set = {k.lower() for k in in_scope_data["in_scope"]}
 
+        # SERP-intent guard: when keyword starts with "<metal> <product>"
+        # (e.g. "gold ring", "silver bracelet"), the SERP serves plain-metal
+        # pages, not diamond-set pieces. Claude shouldn't classify these as
+        # in-scope just because the client has yellow-gold-with-diamond SKUs.
+        # Reject any in-scope kw matching this pattern unless the niche
+        # explicitly mentions plain-metal (e.g. "22kt gold jewellery").
+        niche_lower = (args.niche or "").lower()
+        client_sells_plain_gold   = any(s in niche_lower for s in ["22kt gold", "22k gold", "plain gold", "gold jewellery"])
+        client_sells_plain_silver = "silver" in niche_lower and "diamond" not in niche_lower.split("silver")[0]
+        plain_metal_re = re.compile(r"^\s*(gold|silver|22kt|22k)\b", re.I)
+
+        guarded: set[str] = set()
+        for kw in in_scope_set:
+            if plain_metal_re.search(kw):
+                if "gold" in kw and not client_sells_plain_gold:
+                    rejected_by_serp_guard.append(kw)
+                    continue
+                if "silver" in kw and not client_sells_plain_silver:
+                    rejected_by_serp_guard.append(kw)
+                    continue
+            guarded.add(kw)
+        in_scope_set = guarded
+
     if in_scope_set:
         comps_filt = [(name, nb[nb["Keyword"].astype(str).str.lower().isin(in_scope_set)])
                       for name, nb in comps_filt]
 
     print(f"[gap] Computing gap keywords...", file=sys.stderr)
     gap_kws = compute_gap_keywords(client_filt, comps_filt)
-    wins = big_wins(gap_kws)
+    wins = big_wins(gap_kws, client_name=args.client_name)
+    page_opps = page_opportunities(gap_kws, top_n=5)
+    print(f"[gap] {len(page_opps)} page-level opportunities aggregated", file=sys.stderr)
 
     # Achievable target — top 10 by score
     top10 = sorted(gap_kws, key=_score_big_win, reverse=True)[:10]
@@ -398,9 +670,15 @@ def main() -> int:
         "candidate_keywords":     [g["keyword"] for g in gap_kws],
         "gap_keywords":           gap_kws,
         "big_wins":               wins,
+        "page_opportunities":     page_opps,
         "achievable_top10_traffic": achievable,
         "competitor_misalignment":  misalign,
         "in_scope_keywords_applied": sorted(in_scope_set) if in_scope_set else None,
+        "rejected_by_serp_guard":   sorted(rejected_by_serp_guard) if rejected_by_serp_guard else None,
+        "csv_formats": {
+            "client": client_format,
+            "competitors": [{"name": n, "format": f, "rows": r} for n, f, r in comp_formats],
+        },
     }
     json_path = out_dir / f"gap-{slug}.json"
     json_path.write_text(json.dumps(payload, indent=2))
@@ -408,12 +686,19 @@ def main() -> int:
 
     # If finalising, also write the DOCX report
     if args.finalize:
-        verdict_text = "(Claude should fill in the verdict prose here in chat — the DOCX uses your summary.)"
+        verdict_text = ""
+        if args.verdict_text:
+            verdict_text = args.verdict_text
+        elif args.verdict_file:
+            verdict_text = Path(args.verdict_file).read_text(encoding="utf-8").strip()
+        if not verdict_text:
+            verdict_text = "(No verdict provided — pass --verdict-text or --verdict-file when finalising.)"
         report_path = out_dir / f"report-{slug}.docx"
         write_report(
             report_path, args.client_name, args.client_url, client_traffic,
             [(n, t) for n, _, t in comp_data],
             verdict_text, gap_kws, wins, achievable,
+            page_opps=page_opps,
             misalignment=misalign, niche=args.niche,
         )
         print(f"[OK] Wrote {report_path}")

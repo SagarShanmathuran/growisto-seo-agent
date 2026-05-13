@@ -33,3 +33,13 @@ seo_report_*.docx
 
 # OS
 Thumbs.db
+
+# Claude Code local state
+.claude/
+
+# Analysis artifacts (these belong in /tmp/, not the repo)
+gap-*.json
+seo-competitors-*.json
+in-scope*.json
+verdict*.txt
+gap_analysis.py
