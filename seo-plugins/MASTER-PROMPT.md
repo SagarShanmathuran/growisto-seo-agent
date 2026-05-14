@@ -44,6 +44,12 @@ Priority order:
 
 Apply POSITIONING judgement. Reject informational/healthcare/general-grocery sites. Wrong sub-segment = reject even if keyword overlap is high.
 
+HARD RULE — REJECT competitors smaller than the client.
+Look at each candidate's traffic from the JSON. If a candidate has LESS than 50% of the client's non-brand traffic, REJECT it. There is no meaningful traffic gap to capture from competitors smaller than the client.
+
+If you cannot find 3 competitors that are at least the size of the client, say so explicitly. Do NOT downgrade to smaller picks. Instead, output:
+"⚠ Cannot find 3 size-appropriate competitors. Best matches are <X>, <Y>, <Z> but they are smaller than the client. Consider this client a HIGH-AUTHORITY OUTLIER — gap analysis may not be the right framing. Recommend a defensive SEO audit instead."
+
 STEP 1.6 — Present Phase 1 output and STOP:
 
 ## Client: <name>
@@ -78,10 +84,22 @@ THEN STOP. Do not proceed to Phase 2 until I paste the CSV paths.
 ================ PHASE 2 — Gap analysis + verdict + DOCX ================
 (Run this only AFTER I drop the CSV paths)
 
+🚫 CRITICAL RULE — DO NOT WRITE A CUSTOM PYTHON SCRIPT.
+You MUST use the plugin's run.py. If you find yourself about to write a `gap_analysis.py` or any custom CSV-parsing code, STOP. Use run.py instead. The plugin has:
+  - Non-branded traffic filtering (required for accurate Site comparison)
+  - Top Pages CSV auto-detection
+  - SERP-guard against gold/silver keyword leaks
+  - Catalog scope filter enforcement (--in-scope-keywords)
+  - Verdict prose sanitiser (strips internal ROI math from the DOCX)
+  - Client-vs-competitor page-level aggregation
+Writing your own script bypasses ALL of these and produces wrong reports.
+
 STEP 2.1 — Run the gap script (Pass 1, candidates):
 python "C:\Users\Sagar Shanmathuran\Downloads\history\seo-plugins\skills\gap-analysis\scripts\run.py" --client-name "<NAME>" --client-url "<URL>" --client-csv "<PATH>" --competitor "<C1>:<PATH>" --competitor "<C2>:<PATH>" --competitor "<C3>:<PATH>" --business-model b2c_ecommerce --niche "<STRICT NICHE — write OUT explicitly>"
 
-Read /tmp/gap-*.json.
+Read /tmp/gap-*.json. Sanity check the brand_audit field:
+- Are non-brand traffic numbers materially smaller than total? (If brand_rows=0 across all CSVs, the Branded flag wasn't exported — STOP and ask user to re-export from Ahrefs with brand filters enabled.)
+- Are the competitors larger than the client? (If client_traffic > all comp traffic, the script will warn — surface this to the user, do NOT proceed to a HIGH verdict.)
 
 STEP 2.2 — Apply catalog filter:
 For each candidate keyword, mark in_scope=true ONLY if it's a product the client sells AS A STANDALONE category. Reject material-only keywords, cross-category leaks. Save to /tmp/in-scope.json as ["kw1", "kw2", ...].
@@ -100,30 +118,27 @@ Verdict gate (ROI-driven):
 
 If verdict label contradicts ROI math, RECOMPUTE. Math wins.
 
-STEP 2.4 — Write TWO verdict files:
+STEP 2.4 — Write the verdict prose file:
 
-(a) /tmp/verdict-internal.txt — FOR CHAT ONLY (your output in Step 2.6).
-This one includes the full ROI math (capture × conv × AOV vs ₹3L retainer threshold). 2-3 sentences max.
-
-(b) /tmp/verdict-report.txt — FOR THE DOCX (client-facing).
-This one MUST NOT mention AOV, conversion rate, revenue, retainer, ₹3L/₹1.5L, or any pricing math. It must read as a clean SEO opportunity summary the client can see directly. 2-3 sentences max. Focus on:
+Compose a clean, client-facing verdict (2-3 sentences max). Focus on:
   - The size of the in-scope keyword opportunity (e.g. "22 high-intent keywords where competitors capture ~14K clicks/mo")
   - The strategic angle (existing rankings to improve vs new categories to build)
-  - Tone: analyst-to-client, confident, factual. No selling, no internal math.
+  - Tone: analyst-to-client, confident, factual. No selling.
 
-Examples:
+Save to /tmp/verdict-report.txt.
 
-GOOD (verdict-report.txt for a HIGH potential client):
+Do NOT include AOV, conversion rate, ₹ amounts, retainer math, or ROI multiples — even if you accidentally do, the script's sanitiser will strip those sentences before the DOCX is written. But write it cleanly to start with.
+
+Example (good):
 "Swiss Time House holds a strong organic foundation (6,035 ranking keywords) with clear category-level upside. 22 high-intent gap keywords represent a competitor-captured opportunity of ~14,266 clicks/month, and 8 of these are existing weak rankings (positions 23-47) where targeted on-page optimisation alone should drive material gains within 90 days."
 
-BAD (do not write this in verdict-report.txt — it's internal):
-"...At Rs.10K AOV and 0.4% conversion, that is Rs.5.7L/mo — 3.8x the Growisto retainer..."
+Separately, you'll also report ROI math in chat (Step 2.6). That's for the user's internal pitch math — never goes into the DOCX. Keep them as separate mental tasks: chat = full picture incl. ROI, DOCX verdict = clean client-facing story only.
 
-STEP 2.5 — Finalise DOCX with the CLIENT-FACING verdict:
+STEP 2.5 — Finalise DOCX:
 Re-run the Step 2.1 command with these appended:
 --in-scope-keywords /tmp/in-scope.json --verdict-file /tmp/verdict-report.txt --finalize
 
-(Note: --verdict-file points to verdict-report.txt — the clean one. The internal version stays in chat only.)
+The --in-scope-keywords flag is MANDATORY. If you skip it, the script will REFUSE to write the DOCX (error code 2) — this prevents out-of-scope keywords leaking into the report.
 
 STEP 2.6 — Output chat report:
 
