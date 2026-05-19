@@ -8,8 +8,11 @@ Paste this in a fresh chat. Replace `<PASTE URL HERE>` at the top. Hit enter.
 SEO POTENTIAL ANALYSIS — full workflow with pause for CSVs
 
 CLIENT URL: <PASTE URL HERE>
+TARGET COUNTRY: <IN | US | UK | AU | CA> (defaults to IN if not specified)
 
 You will run this in TWO phases. After Phase 1, STOP and wait for me to drop the Ahrefs CSVs.
+
+Throughout the workflow below, replace <COUNTRY> with the lowercase 2-letter code from above (in, us, uk, au, ca) and <COUNTRY-UC> with the uppercase version. Replace "<MARKET>" with the full market name (India, United States, UK, Australia, Canada).
 
 ================ PHASE 1 — Find competitors + catalog scope ================
 
@@ -17,7 +20,7 @@ STEP 1.1 — WebFetch the client homepage FIRST to identify their niche.
 This gives the SerpAPI seed-keyword builder a useful hint. Note the niche in one short line (e.g. "premium dry fruits and nuts D2C", "diamond and platinum jewellery").
 
 STEP 1.2 — Run the competitor finder with niche hint + SerpAPI cross-check:
-python "C:\Users\Sagar Shanmathuran\Downloads\history\seo-plugins\skills\find-competitors\scripts\find.py" <CLIENT URL> --country IN --scan --niche "<NICHE>"
+python "C:\Users\Sagar Shanmathuran\Downloads\history\seo-plugins\skills\find-competitors\scripts\find.py" <CLIENT URL> --country <COUNTRY> --scan --niche "<NICHE>"
 
 The script now runs THREE signals:
   - Ahrefs organic-competitors (keyword overlap)
@@ -27,7 +30,7 @@ The script now runs THREE signals:
 Read /tmp/seo-competitors-*.json.
 
 STEP 1.3 — Add LLM peer-brand discovery (free, you are the LLM).
-Independent of the script, generate 5-8 brands you know compete with this client in India based on positioning and industry knowledge. Compare to the candidates list:
+Independent of the script, generate 5-8 brands you know compete with this client in <MARKET> based on positioning and industry knowledge. Compare to the candidates list:
 - If a brand is in your list AND in the candidates → already counted as high-confidence
 - If a brand is in your list but NOT in candidates → Ahrefs+SERP missed it, flag as MANUAL ADDITION
 
@@ -83,7 +86,7 @@ STEP 1.6 — Present Phase 1 output and STOP:
 | 1 | ... | ... | ahrefs+serp | ... | ... | ... | ... |
 
 ## NEXT STEP — your turn
-Pull Ahrefs Organic Keywords CSVs (Site Explorer → Organic keywords → country=IN → Export) for:
+Pull Ahrefs CSVs (Site Explorer → Top Pages or Organic keywords → country=<COUNTRY-UC> → Export 100 rows for Top Pages, or 1,000 rows for Organic keywords) for:
 1. <CLIENT>
 2. <COMP 1>
 3. <COMP 2>
