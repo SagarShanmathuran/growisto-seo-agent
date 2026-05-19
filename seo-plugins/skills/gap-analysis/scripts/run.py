@@ -328,6 +328,42 @@ def _score_big_win(g: dict) -> float:
     return score
 
 
+def quick_wins_existing_rankings(gap_kws: list[dict], top_n: int = 10) -> list[dict]:
+    """Filter gap_kws to kws where the client already ranks pos 11-30. These are
+    the fastest wins — page exists, just needs on-page work. Adds a templated
+    `recommended_action` string keyed off the current rank."""
+    out = []
+    for g in gap_kws:
+        rank = g.get("client_rank", "NR")
+        if rank == "NR":
+            continue
+        try:
+            r = int(rank)
+        except (ValueError, TypeError):
+            continue
+        if not (11 <= r <= 30):
+            continue
+        if r <= 15:
+            action = f"Already page 2 — title tag + internal links should push toward top 10"
+        elif r <= 25:
+            action = f"Page 2 — content depth + internal links from authority pages needed"
+        else:
+            action = f"Page 3 — content overhaul + consider consolidating with stronger page"
+        out.append({**g, "recommended_action": action})
+    out.sort(key=lambda x: -x["volume"])
+    return out[:top_n]
+
+
+def conditional_opportunities(all_candidates: list[dict], in_scope_set: set[str],
+                              top_n: int = 10) -> list[dict]:
+    """Keywords that were classified out-of-scope but might unlock value if the
+    client adds them to catalog. Top N by competitor traffic."""
+    in_scope_lower = {k.lower() for k in in_scope_set}
+    out_of_scope = [c for c in all_candidates if c["keyword"].lower() not in in_scope_lower]
+    out_of_scope.sort(key=lambda x: -x["competitor_traffic"])
+    return out_of_scope[:top_n]
+
+
 def big_wins(gap_kws: list[dict], top_n: int = 3, client_name: str = "Your site") -> list[dict]:
     scored = sorted(gap_kws, key=_score_big_win, reverse=True)
     out = []
@@ -385,6 +421,8 @@ def write_report(out_path: Path,
                  gap_kws: list[dict], wins: list[dict],
                  achievable_top10: int,
                  page_opps: list[dict] | None = None,
+                 quick_wins: list[dict] | None = None,
+                 conditional: list[dict] | None = None,
                  misalignment: str = "",
                  niche: str = "General") -> None:
     from docx import Document
@@ -503,6 +541,83 @@ def write_report(out_path: Path,
         row[2].text = k.get("client_rank", "NR")
         row[3].text = k["best_competitor"]
         row[4].text = f"{k['competitor_traffic']:,}"
+
+    # 4. Full Gap Keyword List — all in-scope kws (up to 30), sorted by volume
+    doc.add_paragraph()
+    fh = doc.add_paragraph()
+    fr = fh.add_run("4. Full Gap Keyword List")
+    fr.bold = True; fr.font.size = Pt(14); fr.font.color.rgb = BRAND
+    ft = doc.add_table(rows=1, cols=6)
+    ft.style = "Light Grid Accent 1"
+    hdr = ft.rows[0].cells
+    hdr[0].text = "#"
+    hdr[1].text = "Keyword"
+    hdr[2].text = "Vol/mo"
+    hdr[3].text = f"{client_name} rank"
+    hdr[4].text = "Best competitor"
+    hdr[5].text = "Comp clicks/mo"
+    for i, k in enumerate(sorted(gap_kws, key=lambda x: -x["volume"]), 1):
+        row = ft.add_row().cells
+        row[0].text = str(i)
+        row[1].text = k["keyword"][:60]
+        row[2].text = f"{k['volume']:,}"
+        row[3].text = k.get("client_rank", "NR")
+        row[4].text = k["best_competitor"]
+        row[5].text = f"{k['competitor_traffic']:,}"
+
+    # 5. Quick Wins — Existing Weak Rankings (pos 11-30)
+    if quick_wins:
+        doc.add_paragraph()
+        qh = doc.add_paragraph()
+        qr = qh.add_run("5. Quick Wins — Existing Weak Rankings (pos 11–30)")
+        qr.bold = True; qr.font.size = Pt(14); qr.font.color.rgb = BRAND
+        qt = doc.add_table(rows=1, cols=5)
+        qt.style = "Light Grid Accent 1"
+        hdr = qt.rows[0].cells
+        hdr[0].text = "Keyword"
+        hdr[1].text = "Vol/mo"
+        hdr[2].text = f"{client_name} pos"
+        hdr[3].text = "Comp clicks/mo"
+        hdr[4].text = "Recommended action"
+        for w in quick_wins:
+            row = qt.add_row().cells
+            row[0].text = w["keyword"][:40]
+            row[1].text = f"{w['volume']:,}"
+            row[2].text = w["client_rank"]
+            row[3].text = f"{w['competitor_traffic']:,}"
+            row[4].text = w["recommended_action"]
+
+    # 6. Conditional Opportunities — kws rejected by in-scope filter, verify catalog
+    if conditional:
+        doc.add_paragraph()
+        ch = doc.add_paragraph()
+        cr = ch.add_run("6. Conditional Opportunities — Verify Catalog First")
+        cr.bold = True; cr.font.size = Pt(14); cr.font.color.rgb = BRAND
+        intro = doc.add_paragraph()
+        irun = intro.add_run(
+            "These keywords were classified out-of-scope (client may not currently sell these "
+            "products). If catalog is expanded to include them, they unlock additional gap opportunity:"
+        )
+        irun.font.size = Pt(10); irun.italic = True; irun.font.color.rgb = GREY
+        ct = doc.add_table(rows=1, cols=4)
+        ct.style = "Light Grid Accent 1"
+        hdr = ct.rows[0].cells
+        hdr[0].text = "Keyword"
+        hdr[1].text = "Vol/mo"
+        hdr[2].text = "Best competitor"
+        hdr[3].text = "Comp clicks/mo"
+        for c in conditional:
+            row = ct.add_row().cells
+            row[0].text = c["keyword"][:50]
+            row[1].text = f"{c['volume']:,}"
+            row[2].text = c["best_competitor"]
+            row[3].text = f"{c['competitor_traffic']:,}"
+        total_add = sum(c["competitor_traffic"] for c in conditional)
+        note = doc.add_paragraph()
+        nrun = note.add_run(
+            f"If all conditional clusters are confirmed, +{total_add:,} clicks/mo additional opportunity."
+        )
+        nrun.font.size = Pt(10); nrun.bold = True
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(out_path))
@@ -652,6 +767,10 @@ def main() -> int:
             guarded.add(kw)
         in_scope_set = guarded
 
+    # Keep a reference to the pre-scope competitor data — used to compute
+    # conditional opportunities (candidates Claude rejected as out-of-scope)
+    comps_filt_pre_scope = comps_filt
+
     if in_scope_set:
         comps_filt = [(name, nb[nb["Keyword"].astype(str).str.lower().isin(in_scope_set)])
                       for name, nb in comps_filt]
@@ -661,6 +780,20 @@ def main() -> int:
     wins = big_wins(gap_kws, client_name=args.client_name)
     page_opps = page_opportunities(gap_kws, top_n=5)
     print(f"[gap] {len(page_opps)} page-level opportunities aggregated", file=sys.stderr)
+
+    # Quick wins (existing weak rankings, pos 11-30) — fastest action items
+    quick_wins = quick_wins_existing_rankings(gap_kws, top_n=10)
+    print(f"[gap] {len(quick_wins)} existing weak-ranking quick wins", file=sys.stderr)
+
+    # Conditional opportunities (candidates rejected by in-scope filter)
+    # Only computed when in_scope_set is provided (i.e. Pass 2 / --finalize)
+    conditional = []
+    if in_scope_set:
+        all_candidates = compute_gap_keywords(client_filt, comps_filt_pre_scope,
+                                              max_gap_keywords=100)
+        conditional = conditional_opportunities(all_candidates, in_scope_set, top_n=10)
+        print(f"[gap] {len(conditional)} conditional opportunities (rejected by scope filter)",
+              file=sys.stderr)
 
     # Achievable target — top 10 by score
     top10 = sorted(gap_kws, key=_score_big_win, reverse=True)[:10]
@@ -688,6 +821,8 @@ def main() -> int:
         "gap_keywords":           gap_kws,
         "big_wins":               wins,
         "page_opportunities":     page_opps,
+        "quick_wins":             quick_wins,
+        "conditional_opportunities": conditional,
         "achievable_top10_traffic": achievable,
         "competitor_misalignment":  misalign,
         "in_scope_keywords_applied": sorted(in_scope_set) if in_scope_set else None,
@@ -756,6 +891,8 @@ def main() -> int:
             [(n, t) for n, _, t in comp_data],
             verdict_text, gap_kws, wins, achievable,
             page_opps=page_opps,
+            quick_wins=quick_wins,
+            conditional=conditional,
             misalignment=misalign, niche=args.niche,
         )
         print(f"[OK] Wrote {report_path}")
