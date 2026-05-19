@@ -101,38 +101,45 @@ Read /tmp/gap-*.json. Sanity check the brand_audit field:
 - Are non-brand traffic numbers materially smaller than total? (If brand_rows=0 across all CSVs, the Branded flag wasn't exported — STOP and ask user to re-export from Ahrefs with brand filters enabled.)
 - Are the competitors larger than the client? (If client_traffic > all comp traffic, the script will warn — surface this to the user, do NOT proceed to a HIGH verdict.)
 
-STEP 2.2 — Apply catalog filter:
-For each candidate keyword, mark in_scope=true ONLY if it's a product the client sells AS A STANDALONE category. Reject material-only keywords, cross-category leaks. Save to /tmp/in-scope.json as ["kw1", "kw2", ...].
+STEP 2.2 — Apply catalog filter in ONE pass (no review pause).
+Quickly scan candidate_keywords. Keep only those that are products/services the client sells AS A STANDALONE category. Reject:
+- Material-only keywords when client doesn't sell that material standalone (gold X, silver X, plain Y)
+- Cross-category leaks (cookware brand → cutlery; tea → coffee; etc.)
+- Branded competitor terms
+- Pure informational queries (how to / what is / guide / tutorial)
 
-STEP 2.3 — Compute ROI math (this drives the verdict, not gap ratio):
-- Realistic 6-12 month capture = sum of competitor traffic on top-10 in-scope kws
-- Incremental revenue = capture × conv rate × AOV
-- B2C ecomm: 1-2% conv. B2B: 3-5% lead conv.
-- Compare against ₹3L/mo threshold (Growisto ₹1.5L retainer needs 2x ROI)
+Write the in-scope list directly to /tmp/in-scope.json as ["kw1", "kw2", ...]. Do NOT ask for review or pause. Just write the file and move on.
 
-Verdict gate (ROI-driven):
-- HIGH: incremental revenue ≥ ₹5L/mo AND in-scope gap > 100 kws
-- MEDIUM: ₹3-5L/mo AND in-scope gap 30-100 kws
-- LOW: ₹1.5-3L/mo OR gap 10-30 kws — TIGHT, retainer may not be viable
-- NO POTENTIAL: < ₹1.5L/mo OR gap < 10 kws
+STEP 2.3 — Decide the verdict using these gates (no ROI math, no AOV):
 
-If verdict label contradicts ROI math, RECOMPUTE. Math wins.
+Look at:
+- In-scope gap kw count
+- Sum of competitor traffic on top-10 in-scope kws (= achievable_top10_traffic in JSON)
+- Client's existing non-brand traffic
+- Whether competitors are larger or smaller than the client
 
-STEP 2.4 — Write the verdict prose file:
+Gates:
+- HIGH potential: in-scope gap > 100 AND achievable > 30K clicks/mo AND competitors are 2-15x larger than client
+- MEDIUM potential: in-scope gap 30-100 AND achievable 10K-30K clicks/mo
+- LOW potential: in-scope gap 10-30 OR achievable 3K-10K
+- No meaningful potential: in-scope gap < 10 OR achievable < 3K OR client traffic already exceeds best competitor
 
-Compose a clean, client-facing verdict (2-3 sentences max). Focus on:
-  - The size of the in-scope keyword opportunity (e.g. "22 high-intent keywords where competitors capture ~14K clicks/mo")
-  - The strategic angle (existing rankings to improve vs new categories to build)
-  - Tone: analyst-to-client, confident, factual. No selling.
+Special cases:
+- If client_traffic > max(competitor_traffic) → cap verdict at LOW. Surface in chat that competitor picks may be wrong.
+- If brand_audit shows zero branded keywords across all CSVs → STOP. The Branded flag wasn't exported. Tell user to re-export with brand filter enabled.
 
-Save to /tmp/verdict-report.txt.
+STEP 2.4 — Write the verdict (2 sentences MAX):
 
-Do NOT include AOV, conversion rate, ₹ amounts, retainer math, or ROI multiples — even if you accidentally do, the script's sanitiser will strip those sentences before the DOCX is written. But write it cleanly to start with.
+Start with one of: "HIGH potential." / "MEDIUM potential." / "LOW potential." / "No meaningful potential."
+Then 1-2 sentences with the reasoning. Anchor on the in-scope keyword count + capturable competitor traffic. No AOV, no conversion rate, no ₹/Rs. amounts.
 
-Example (good):
-"Swiss Time House holds a strong organic foundation (6,035 ranking keywords) with clear category-level upside. 22 high-intent gap keywords represent a competitor-captured opportunity of ~14,266 clicks/month, and 8 of these are existing weak rankings (positions 23-47) where targeted on-page optimisation alone should drive material gains within 90 days."
+Save to /tmp/verdict-report.txt. Keep it short.
 
-Separately, you'll also report ROI math in chat (Step 2.6). That's for the user's internal pitch math — never goes into the DOCX. Keep them as separate mental tasks: chat = full picture incl. ROI, DOCX verdict = clean client-facing story only.
+Example (HIGH): "HIGH potential. Swiss Time House has 6,035 existing rankings and 22 in-scope gap keywords where competitors capture 14,266 clicks/mo — 8 of these are weak rankings (pos 23-47) where on-page optimisation alone should drive material gains in 90 days."
+
+Example (MEDIUM): "MEDIUM potential. Plated has a defensible exosome moat, but its 850 non-brand clicks vs competitors' 37K-54K means the 11,816 in-scope gap is realistic to chase only via deepening existing categories — not catching the leaders."
+
+Example (LOW): "LOW potential. Only 17 in-scope keywords with 8,119 competitor capture. At Nu Republic's near-zero existing SEO base (372 clicks/mo) and narrow audio catalog, organic gains will not move the business meaningfully."
 
 STEP 2.5 — Finalise DOCX:
 Re-run the Step 2.1 command with these appended:
@@ -140,39 +147,12 @@ Re-run the Step 2.1 command with these appended:
 
 The --in-scope-keywords flag is MANDATORY. If you skip it, the script will REFUSE to write the DOCX (error code 2) — this prevents out-of-scope keywords leaking into the report.
 
-STEP 2.6 — Output chat report:
+STEP 2.6 — One-line chat output:
 
-## Verdict: HIGH | MEDIUM | LOW | NO POTENTIAL
-[Verdict prose from /tmp/verdict.txt]
+Just confirm in chat:
+"✓ Done. Verdict: <HIGH/MEDIUM/LOW>. DOCX: /tmp/report-<slug>.docx"
 
-## ROI math (show your working)
-- In-scope gap keywords: N
-- Realistic 6-12 month capture: X clicks/mo
-- × Conv rate Y% × AOV ₹Z = ₹W/mo incremental revenue
-- vs ₹3L/mo threshold → VIABLE / TIGHT / NOT VIABLE
-
-## Catalog scope
-[IN / OUT bullets]
-
-## Traffic comparison
-| Site | Traffic | KWs | DR |
-
-## Keyword opportunity
-- Candidate gap: N
-- In-scope after filter: N
-- Out-of-scope rejected: N
-
-## Top 5 weak rankings (client pos 11-30 — fastest wins)
-| Keyword | Vol | Client pos | Action |
-
-## Top 5 in-scope new pages
-| Keyword cluster | Vol | Best comp pos | Page to build |
-
-## Out-of-scope rejections (sanity check)
-[8-10 high-vol kws rejected with one-line reason each]
-
-## DOCX
-/tmp/report-<client-slug>.docx
+Optional one-line summary of the in-scope count + capturable traffic if you want, but don't write paragraphs. The DOCX has everything the user needs.
 ```
 
 ---

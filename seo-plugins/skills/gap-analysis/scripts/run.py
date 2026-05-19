@@ -402,18 +402,18 @@ def write_report(out_path: Path,
         section.top_margin = section.bottom_margin = Cm(1.5)
         section.left_margin = section.right_margin = Cm(1.8)
 
-    # Cover
+    # Compact cover — one title line + one metadata line
     h = doc.add_paragraph()
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = h.add_run("SEO POTENTIAL ANALYSIS")
-    r.font.size = Pt(20); r.bold = True; r.font.color.rgb = BRAND
+    r = h.add_run(f"SEO Opportunity Audit — {client_name}")
+    r.font.size = Pt(16); r.bold = True; r.font.color.rgb = BRAND
 
     sub = doc.add_paragraph()
     sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    rs = sub.add_run(f"{client_name}  ·  {niche}  ·  {datetime.now().strftime('%d %b %Y')}")
-    rs.font.size = Pt(11); rs.font.color.rgb = GREY
+    rs = sub.add_run(f"{niche}  ·  Prepared by Growisto  ·  {datetime.now().strftime('%d %b %Y')}")
+    rs.font.size = Pt(10); rs.font.color.rgb = GREY
 
-    # Verdict — sanitised to strip internal ROI math (AOV, conversion, retainer)
+    # Verdict — large, prominent, sanitised
     doc.add_paragraph()
     vh = doc.add_paragraph()
     vr = vh.add_run("Verdict")
@@ -423,15 +423,18 @@ def write_report(out_path: Path,
     if vp.runs:
         vp.runs[0].font.size = Pt(11)
 
+    # Misalignment / competitor-sanity warning (only if triggered)
     if misalignment:
         wp = doc.add_paragraph()
-        wr = wp.add_run("⚠ COMPETITOR MIS-ALIGNMENT DETECTED")
-        wr.bold = True; wr.font.color.rgb = RED; wr.font.size = Pt(12)
-        doc.add_paragraph(misalignment).runs[0].font.size = Pt(10)
+        wr = wp.add_run("⚠ Competitor selection note")
+        wr.bold = True; wr.font.color.rgb = RED; wr.font.size = Pt(11)
+        mp = doc.add_paragraph(misalignment)
+        if mp.runs:
+            mp.runs[0].font.size = Pt(10)
 
-    # Traffic comparison
+    # 1. Non-Branded Organic Traffic
     th = doc.add_paragraph()
-    tr_run = th.add_run("Organic Traffic Benchmark")
+    tr_run = th.add_run("1. Non-Branded Organic Traffic")
     tr_run.bold = True; tr_run.font.size = Pt(14); tr_run.font.color.rgb = BRAND
     table = doc.add_table(rows=1, cols=3)
     table.style = "Light Grid Accent 1"
@@ -455,75 +458,50 @@ def write_report(out_path: Path,
 
     # (Projection callout removed — report shows facts, not estimates)
 
-    # Priority Opportunities — PAGE-LEVEL
+    # 2. Top Page Opportunities — single compact table, no prose
     doc.add_paragraph()
     wh = doc.add_paragraph()
-    wr2 = wh.add_run("Priority Page-Level Opportunities")
+    wr2 = wh.add_run("2. Top Page Opportunities")
     wr2.bold = True; wr2.font.size = Pt(14); wr2.font.color.rgb = BRAND
 
     if not page_opps:
         doc.add_paragraph("No page-level opportunities computed.").runs[0].font.size = Pt(10)
     else:
-        for i, pg in enumerate(page_opps, 1):
-            # Headline: page topic + action type
-            hp = doc.add_paragraph()
-            hr = hp.add_run(f"#{i}  {pg['page_label'].title()}  —  {pg['action_type']}")
-            hr.bold = True; hr.font.size = Pt(13); hr.font.color.rgb = DARK
+        pt = doc.add_table(rows=1, cols=5)
+        pt.style = "Light Grid Accent 1"
+        hdr = pt.rows[0].cells
+        hdr[0].text = "Page topic"
+        hdr[1].text = f"{client_name} clicks/mo"
+        hdr[2].text = "Best competitor"
+        hdr[3].text = "Competitor clicks/mo"
+        hdr[4].text = "Action"
+        for pg in page_opps[:5]:
+            row = pt.add_row().cells
+            row[0].text = pg["page_label"].title()[:40]
+            row[1].text = f"{pg.get('client_traffic_on_cluster', 0):,}"
+            row[2].text = pg["competitor"]
+            row[3].text = f"{pg['competitor_traffic_capture']:,}"
+            row[4].text = "Optimise" if pg["action_type"] == "OPTIMISE EXISTING PAGE" else "Build"
 
-            # Page-level traffic comparison: client vs competitor (FACTS ONLY,
-            # no projections). One line, easy to read.
-            sp = doc.add_paragraph()
-            client_traf = pg.get("client_traffic_on_cluster", 0)
-            sr = sp.add_run(
-                f"{pg['competitor']}: {pg['competitor_traffic_capture']:,} clicks/mo on this cluster  ·  "
-                f"{client_name}: {client_traf:,} clicks/mo  ·  "
-                f"Keywords in cluster: {pg['keyword_count']}  ·  "
-                f"Combined search volume: {pg['total_search_volume']:,}/mo"
-            )
-            sr.font.size = Pt(10); sr.font.color.rgb = GREY
-
-            # Reference URLs (client + competitor)
-            ref = doc.add_paragraph()
-            ref.paragraph_format.left_indent = Cm(0.5)
-            rrun = ref.add_run(f"Competitor page: {pg['competitor_url']}")
-            rrun.font.size = Pt(9); rrun.italic = True; rrun.font.color.rgb = GREY
-
-            if pg["client_existing_pages"]:
-                cp = doc.add_paragraph()
-                cp.paragraph_format.left_indent = Cm(0.5)
-                cpr = cp.add_run(
-                    f"{client_name} existing page: {pg['client_existing_pages'][0]}"
-                )
-                cpr.font.size = Pt(9); cpr.italic = True; cpr.font.color.rgb = GREY
-
-            # Keyword cluster preview
-            kp = doc.add_paragraph()
-            kp.paragraph_format.left_indent = Cm(0.5)
-            kw_preview = "  •  ".join(
-                f"{k['kw']} ({k['vol']:,}/mo)" for k in pg["keywords"][:5]
-            )
-            kpr = kp.add_run(f"Keyword cluster: {kw_preview}")
-            kpr.font.size = Pt(9)
-
-    # Priority keyword gap table
+    # 3. Top Keyword Opportunities — top 10, with client rank
     doc.add_paragraph()
     kh = doc.add_paragraph()
-    kr = kh.add_run("Priority Keyword Gap (sorted by competitor traffic captured)")
+    kr = kh.add_run("3. Top Keyword Opportunities")
     kr.bold = True; kr.font.size = Pt(14); kr.font.color.rgb = BRAND
     kt = doc.add_table(rows=1, cols=5)
     kt.style = "Light Grid Accent 1"
     hdr = kt.rows[0].cells
     hdr[0].text = "Keyword"
-    hdr[1].text = "Monthly search volume"
-    hdr[2].text = "Best-ranking competitor"
-    hdr[3].text = "Competitor rank"
-    hdr[4].text = "Competitor traffic captured (mo)"
-    for k in sorted(gap_kws, key=lambda x: -x["competitor_traffic"])[:15]:
+    hdr[1].text = "Search vol/mo"
+    hdr[2].text = f"{client_name} rank"
+    hdr[3].text = "Best competitor"
+    hdr[4].text = "Comp clicks/mo"
+    for k in sorted(gap_kws, key=lambda x: -x["competitor_traffic"])[:10]:
         row = kt.add_row().cells
         row[0].text = k["keyword"][:50]
         row[1].text = f"{k['volume']:,}"
-        row[2].text = k["best_competitor"]
-        row[3].text = str(k["competitor_rank"])
+        row[2].text = k.get("client_rank", "NR")
+        row[3].text = k["best_competitor"]
         row[4].text = f"{k['competitor_traffic']:,}"
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
