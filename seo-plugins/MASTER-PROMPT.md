@@ -37,9 +37,21 @@ List:
 - OUT: <products competitors sell but client doesn't, especially metals/materials/adjacent>
 
 STEP 1.5 — Pick top 3 competitors.
-Priority order:
+
+PRIMARY CATEGORY RULE (critical for multi-category brands):
+For brands spanning multiple product categories (Black+Decker, Bosch, Stanley, Samsung, GE — anyone selling power tools + appliances + outdoor, or tech + accessories + services), identify the PRIMARY category first:
+- Look at homepage hero + sitemap path frequency + SKU count
+- PRIMARY = the category driving most organic traffic and search demand
+- For Black+Decker: PRIMARY = power tools (not appliances, not outdoor)
+- ALL 3 competitors must come from the PRIMARY category
+- Secondary categories get their own separate analysis later
+
+30% OVERLAP MINIMUM:
+Reject any candidate that shares <30% of the brand's primary catalog. Hamilton Beach has 0% overlap with Black+Decker's power tools — REJECT regardless of keyword overlap score.
+
+Priority order for picking:
 1. high_confidence candidates (in ≥2 signals) — strongest picks
-2. Single-source candidates that match positioning
+2. Single-source candidates that match positioning AND primary category
 3. Your manual LLM additions
 
 Apply POSITIONING judgement. Reject informational/healthcare/general-grocery sites. Wrong sub-segment = reject even if keyword overlap is high.
@@ -47,8 +59,8 @@ Apply POSITIONING judgement. Reject informational/healthcare/general-grocery sit
 HARD RULE — REJECT competitors smaller than the client.
 Look at each candidate's traffic from the JSON. If a candidate has LESS than 50% of the client's non-brand traffic, REJECT it. There is no meaningful traffic gap to capture from competitors smaller than the client.
 
-If you cannot find 3 competitors that are at least the size of the client, say so explicitly. Do NOT downgrade to smaller picks. Instead, output:
-"⚠ Cannot find 3 size-appropriate competitors. Best matches are <X>, <Y>, <Z> but they are smaller than the client. Consider this client a HIGH-AUTHORITY OUTLIER — gap analysis may not be the right framing. Recommend a defensive SEO audit instead."
+If you cannot find 3 competitors that are at least the size of the client AND in the primary category, say so explicitly. Do NOT downgrade. Instead, output:
+"⚠ Cannot find 3 size-appropriate primary-category competitors. Best matches are <X>, <Y>, <Z> but they are <smaller than client / wrong sub-segment>. Consider this client a HIGH-AUTHORITY OUTLIER — gap analysis may not be the right framing. Recommend a defensive SEO audit instead."
 
 STEP 1.6 — Present Phase 1 output and STOP:
 
